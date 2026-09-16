@@ -1965,11 +1965,18 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.agent_sort_toggle, point) {
+                    // Click cycles through every mode: grouped -> priority ->
+                    // a-z -> grouped. Adding alphabetical as a third stop keeps
+                    // the toggle reachable by mouse; leaving it config-only
+                    // would make it the one mode you cannot get to from the UI.
                     let sort = match self.config.agent_panel_sort {
                         crate::config::AgentPanelSortConfig::Spaces => {
                             crate::config::AgentPanelSortConfig::Priority
                         }
                         crate::config::AgentPanelSortConfig::Priority => {
+                            crate::config::AgentPanelSortConfig::Alphabetical
+                        }
+                        crate::config::AgentPanelSortConfig::Alphabetical => {
                             crate::config::AgentPanelSortConfig::Spaces
                         }
                     };
