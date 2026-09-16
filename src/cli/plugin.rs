@@ -24,6 +24,7 @@ pub(super) fn run_plugin_command(args: &[String]) -> std::io::Result<i32> {
 
     match subcommand {
         "install" => plugin_install(&args[1..]),
+        "update" => plugin_update(&args[1..]),
         "uninstall" => plugin_uninstall(&args[1..]),
         "link" => plugin_link(&args[1..]),
         "list" => plugin_list(&args[1..]),
@@ -190,28 +191,150 @@ fn plugin_install(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    let temp_root = create_plugin_temp_dir("install")?;
+    install_github_plugin(source, requested_ref, yes, true, None)
+}
+
+fn plugin_update(args: &[String]) -> std::io::Result<i32> {
+    let mut targets = Vec::new();
+    let mut yes = false;
+    for arg in args {
+        match arg.as_str() {
+            "--yes" | "-y" => yes = true,
+            other if other.starts_with('-') => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+            _ => targets.push(arg.as_str()),
+        }
+    }
+
+    let installed = match live_installed_plugins() {
+        Ok(plugins) => plugins,
+        Err(err) if is_connection_error(&err) => registry_plugins(),
+        Err(err) => return Err(err),
+    };
+    let plugins = if targets.is_empty() {
+        installed
+            .into_iter()
+            .filter(|plugin| plugin.source.kind == PluginSourceKind::Github)
+            .collect::<Vec<_>>()
+    } else {
+        let mut plugins = Vec::new();
+        for target in targets {
+            let plugin = match GithubPluginSource::parse(target) {
+                Ok(source) => installed
+                    .iter()
+                    .find(|plugin| plugin_matches_github_source(plugin, &source)),
+                Err(_) => installed.iter().find(|plugin| plugin.plugin_id == target),
+            };
+            let Some(plugin) = plugin else {
+                eprintln!("plugin not installed: {target}");
+                return Ok(1);
+            };
+            if plugin.source.kind != PluginSourceKind::Github {
+                eprintln!("plugin is locally linked and cannot be updated: {target}");
+                return Ok(1);
+            }
+            plugins.push(plugin.clone());
+        }
+        plugins
+    };
+
+    if plugins.is_empty() {
+        println!("No GitHub-managed plugins installed.");
+        return Ok(0);
+    }
+    if !yes && !io::stdin().is_terminal() {
+        eprintln!("plugin update requires --yes when stdin is not interactive");
+        return Ok(2);
+    }
+
+    let mut exit_code = 0;
+    for plugin in plugins {
+        let plugin_id = plugin.plugin_id.clone();
+        let source = match GithubPluginSource::from_installed(&plugin) {
+            Ok(source) => source,
+            Err(err) => {
+                eprintln!("error updating {plugin_id}: {err}");
+                exit_code = 1;
+                continue;
+            }
+        };
+        match install_github_plugin(
+            source,
+            plugin.source.requested_ref.clone(),
+            yes,
+            plugin.enabled,
+            Some(&plugin_id),
+        ) {
+            Ok(code) => exit_code = exit_code.max(code),
+            Err(err) => {
+                eprintln!("error updating {plugin_id}: {err}");
+                exit_code = 1;
+            }
+        }
+    }
+    Ok(exit_code)
+}
+
+fn install_github_plugin(
+    source: GithubPluginSource,
+    requested_ref: Option<String>,
+    yes: bool,
+    enabled: bool,
+    updating_plugin_id: Option<&str>,
+) -> std::io::Result<i32> {
+    let updating = updating_plugin_id.is_some();
+    let temp_root = create_plugin_temp_dir(if updating { "update" } else { "install" })?;
     let checkout = temp_root.join("checkout");
     let install_result = (|| {
         git_checkout(&source, requested_ref.as_deref(), &checkout)?;
         let resolved_commit = git_output(&checkout, ["rev-parse", "HEAD"])?;
         let manifest_root = source.manifest_root(&checkout);
-        let preview_plugin = load_cli_plugin_manifest(&manifest_root, true)?;
+        let preview_plugin = load_cli_plugin_manifest(&manifest_root, enabled)?;
+        if let Some(plugin_id) = updating_plugin_id {
+            if preview_plugin.plugin_id != plugin_id {
+                return Err(io::Error::other(format!(
+                    "update source now contains plugin {}, expected {plugin_id}",
+                    preview_plugin.plugin_id
+                )));
+            }
+        }
         let existing = installed_plugin_info(&preview_plugin.plugin_id)?;
         ensure_replacement_allowed(&preview_plugin, existing.as_ref())?;
+        if updating
+            && existing
+                .as_ref()
+                .and_then(|plugin| plugin.source.resolved_commit.as_deref())
+                == Some(resolved_commit.as_str())
+        {
+            println!("{} is already up to date.", preview_plugin.plugin_id);
+            return Ok(0);
+        }
 
         let mut source_info =
             source.to_source_info(requested_ref, resolved_commit, None, current_unix_ms());
-        print_install_preview(&preview_plugin, &source_info, existing.as_ref());
-        if !yes && !confirm("Install this plugin?")? {
-            eprintln!("plugin install cancelled");
+        print_install_preview(&preview_plugin, &source_info, existing.as_ref(), updating);
+        let prompt = if updating {
+            "Update this plugin?"
+        } else {
+            "Install this plugin?"
+        };
+        if !yes && !confirm(prompt)? {
+            eprintln!(
+                "plugin {} cancelled",
+                if updating { "update" } else { "install" }
+            );
             return Ok(0);
         }
         if let Err(err) = run_plugin_build_commands(&preview_plugin, &manifest_root) {
-            eprintln!("{err}");
+            eprintln!(
+                "{err}\n\nPlugin was not {}.",
+                if updating { "updated" } else { "installed" }
+            );
             return Ok(1);
         }
-        let post_build_plugin = load_cli_plugin_manifest(&manifest_root, true)?;
+        let post_build_plugin = load_cli_plugin_manifest(&manifest_root, enabled)?;
         ensure_manifest_unchanged_after_build(&preview_plugin, &post_build_plugin)?;
 
         let final_checkout = crate::plugin_paths::managed_checkout_path(&preview_plugin.plugin_id);
@@ -232,7 +355,7 @@ fn plugin_install(args: &[String]) -> std::io::Result<i32> {
 
             source_info.managed_path = Some(final_checkout.display().to_string());
             let final_manifest_root = source.manifest_root(&final_checkout);
-            let mut plugin = load_cli_plugin_manifest(&final_manifest_root, true)
+            let mut plugin = load_cli_plugin_manifest(&final_manifest_root, enabled)
                 .map_err(InstallFailure::Rollback)?;
             plugin.source = source_info.clone();
             register_installed_plugin(plugin.clone(), source_info.clone())?;
@@ -249,7 +372,12 @@ fn plugin_install(args: &[String]) -> std::io::Result<i32> {
             }
             Err(InstallFailure::KeepCheckout(err)) => return Err(err),
         };
-        println!("Installed {} from {}.", plugin.plugin_id, source.display());
+        println!(
+            "{} {} from {}.",
+            if updating { "Updated" } else { "Installed" },
+            plugin.plugin_id,
+            source.display()
+        );
         println!(
             "Config: {}",
             crate::plugin_paths::plugin_config_dir(&plugin.plugin_id).display()
@@ -763,6 +891,23 @@ impl GithubPluginSource {
         format!("https://github.com/{}/{}.git", self.owner, self.repo)
     }
 
+    fn from_installed(plugin: &InstalledPluginInfo) -> std::io::Result<Self> {
+        let owner = plugin
+            .source
+            .owner
+            .clone()
+            .ok_or_else(|| io::Error::other("installed GitHub plugin has no source owner"))?;
+        let repo =
+            plugin.source.repo.clone().ok_or_else(|| {
+                io::Error::other("installed GitHub plugin has no source repository")
+            })?;
+        Ok(Self {
+            owner,
+            repo,
+            subdir: plugin.source.subdir.clone(),
+        })
+    }
+
     fn display(&self) -> String {
         match &self.subdir {
             Some(subdir) => format!("{}/{}/{}", self.owner, self.repo, subdir),
@@ -1212,8 +1357,12 @@ fn print_install_preview(
     plugin: &InstalledPluginInfo,
     source: &PluginSourceInfo,
     existing: Option<&InstalledPluginInfo>,
+    updating: bool,
 ) {
-    eprintln!("Plugin install preview:");
+    eprintln!(
+        "Plugin {} preview:",
+        if updating { "update" } else { "install" }
+    );
     eprintln!("  id: {}", plugin.plugin_id);
     eprintln!("  name: {}", plugin.name);
     eprintln!("  version: {}", plugin.version);
@@ -1446,8 +1595,7 @@ impl fmt::Display for PluginBuildFailure {
                 write_output_section(f, "stdout", stdout)?;
             }
         }
-        writeln!(f)?;
-        write!(f, "Plugin was not installed.")
+        Ok(())
     }
 }
 
@@ -1655,6 +1803,7 @@ fn print_plugin_response(method: Method) -> std::io::Result<i32> {
 fn print_plugin_help() {
     eprintln!("herdr plugin commands:");
     eprintln!("  herdr plugin install <owner>/<repo>[/subdir...] [--ref REF] [--yes]");
+    eprintln!("  herdr plugin update [<plugin_id|owner/repo[/subdir...]>...] [--yes]");
     eprintln!("  herdr plugin uninstall <plugin_id|owner/repo[/subdir...]>");
     eprintln!("  herdr plugin link <path> [--disabled]");
     eprintln!("  herdr plugin list [--plugin ID] [--json]");
