@@ -81,6 +81,39 @@ pub(crate) fn apply_agent_view(app: &AppState, entries: &mut Vec<AgentPanelEntry
             )
         });
     }
+
+    if matches!(
+        app.agent_panel_sort,
+        crate::app::state::AgentPanelSort::Alphabetical
+    ) {
+        // Order by the name the operator READS, so the panel position of a given
+        // agent is predictable. `spaces` leaves spawn order (an agent moves only
+        // because of when it started) and `priority` reorders as attention
+        // changes — neither lets you find a known agent by name.
+        //
+        // Sorts on the same string the sidebar renders: the agent's own label
+        // when it has one, else its terminal title. An entry with neither sorts
+        // last rather than colliding at the top, so unnamed panes never displace
+        // named agents. Comparison is case-insensitive because a fleet named by
+        // convention mixes cases (`a-audit-structure`, `EAP-3940 hub`) and a
+        // byte-order sort would scatter them.
+        entries.sort_by(|left, right| {
+            fn sort_key(entry: &AgentPanelEntry) -> (u8, String) {
+                let name = entry
+                    .agent_kind_label
+                    .as_deref()
+                    .or_else(|| entry.tokens.get("terminal_title_stripped").map(String::as_str))
+                    .or_else(|| entry.tokens.get("terminal_title").map(String::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                match name {
+                    Some(value) => (0, value.to_lowercase()),
+                    None => (1, String::new()),
+                }
+            }
+            sort_key(left).cmp(&sort_key(right))
+        });
+    }
 }
 
 pub(crate) fn presented_workspace_idx(app: &AppState) -> Option<usize> {

@@ -99,6 +99,10 @@ pub enum AgentPanelSortConfig {
     #[serde(alias = "workspaces")]
     Spaces,
     Priority,
+    /// Order the agent panel by the agent's displayed name, A-Z.
+    /// `spaces` preserves spawn order and `priority` orders by attention, so
+    /// neither gives a stable, predictable position for a named fleet.
+    Alphabetical,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
