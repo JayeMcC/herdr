@@ -193,6 +193,7 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
         name: Some("pi".into()),
+        parent_agent: None,
         display_agent: Some("pi".into()),
         agent: Some("pi".into()),
         title: None,

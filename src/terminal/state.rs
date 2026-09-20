@@ -131,6 +131,19 @@ pub struct TerminalState {
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
+    /// Name of the agent that SPAWNED this one, when another agent spawned it.
+    ///
+    /// Held as the parent's agent NAME rather than its pane or terminal id,
+    /// because those are exactly the two identifiers that do not survive: pane
+    /// ids are workspace-scoped and get reassigned, and terminal ids are
+    /// regenerated on restart. The name is unique (duplicates are rejected at
+    /// start), persisted in the session snapshot, and restored on cold start,
+    /// so the edge still points somewhere afterwards.
+    ///
+    /// `None` is the ordinary case and not an error: an agent started by hand
+    /// has no parent, and every agent predating this field has none either.
+    /// An unparented agent must still render.
+    pub parent_agent: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
     managed_agent_launch_session: Option<crate::agent_resume::PersistedAgentSession>,
@@ -166,6 +179,7 @@ impl TerminalState {
             terminal_title: None,
             manual_label: None,
             agent_name: None,
+            parent_agent: None,
             agent_name_owner: None,
             managed_agent: None,
             managed_agent_launch_session: None,

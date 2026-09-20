@@ -472,6 +472,139 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
     }
 
+    /// Name a live agent in the fixture so it can be used as a parent.
+    fn name_root_agent(app: &mut App, name: &str) -> crate::layout::PaneId {
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        terminal.set_agent_name(name.into());
+        pane_id
+    }
+
+    /// Give a named agent a recorded parent, the way a spawn would.
+    fn set_parent(app: &mut App, pane_id: crate::layout::PaneId, parent: Option<&str>) {
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.parent_agent = parent.map(str::to_string);
+    }
+
+    #[tokio::test]
+    async fn a_recorded_parent_is_reported_on_the_agent_record() {
+        // The whole point of the field: a consumer reading `agent list` can see
+        // who spawned whom. Asserting it arrives on the WIRE record, not just
+        // on the terminal we set it on, because the wire shape is the contract.
+        let mut app = app_with_agent();
+        let pane_id = name_root_agent(&mut app, "worker");
+        set_parent(&mut app, pane_id, Some("orchestrator"));
+
+        let response = app.handle_agent_get(
+            "req".into(),
+            AgentTarget {
+                target: "worker".into(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentInfo { agent } = success.result else {
+            panic!("expected an agent record: {response}");
+        };
+        assert_eq!(agent.parent_agent.as_deref(), Some("orchestrator"));
+    }
+
+    #[tokio::test]
+    async fn an_unparented_agent_reports_no_parent_and_is_still_listed() {
+        // Most agents have no parent and never will. The failure this guards
+        // against is not a wrong parent but a MISSING ROW: an agent without a
+        // parent must still appear, or the panel silently loses it.
+        let mut app = app_with_agent();
+        name_root_agent(&mut app, "loner");
+
+        let response = app.handle_agent_get(
+            "req".into(),
+            AgentTarget {
+                target: "loner".into(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentInfo { agent } = success.result else {
+            panic!("expected an agent record: {response}");
+        };
+        assert_eq!(agent.parent_agent, None);
+        assert_eq!(agent.name.as_deref(), Some("loner"));
+    }
+
+    #[tokio::test]
+    async fn the_parent_key_is_omitted_rather_than_null_when_absent() {
+        // Consumers were told absent means "no parent" and that the key is
+        // omitted, not serialised as null. That promise is part of the wire
+        // contract, so it is asserted against the raw JSON rather than the
+        // typed struct — a `null` would deserialise to None and pass a typed
+        // assertion while breaking a consumer that checks key presence.
+        let mut app = app_with_agent();
+        name_root_agent(&mut app, "loner");
+
+        let response = app.handle_agent_get(
+            "req".into(),
+            AgentTarget {
+                target: "loner".into(),
+            },
+        );
+        let raw: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let agent = &raw["result"]["agent"];
+        assert!(
+            agent.get("parent_agent").is_none(),
+            "parent_agent must be omitted when absent, got: {agent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_a_parent_repoints_its_children() {
+        // Children hold the parent by NAME. A rename that does not follow
+        // through leaves them pointing at a name nobody answers to, and since
+        // an unresolvable parent renders at the root, the whole subtree
+        // silently flattens. This is the test for that flattening.
+        let mut app = app_with_agent();
+        // A second workspace gives a second agent its own pane and terminal;
+        // the single-pane fixture cannot host a parent and a child at once.
+        app.state.workspaces.push(Workspace::test_new("child"));
+        app.state.ensure_test_terminals();
+        name_root_agent(&mut app, "orchestrator");
+
+        let child_pane = app.state.workspaces[1].tabs[0].root_pane;
+        let child_terminal_id = app.state.workspaces[1].tabs[0].panes[&child_pane]
+            .attached_terminal_id
+            .clone();
+        {
+            let terminal = app.state.terminals.get_mut(&child_terminal_id).unwrap();
+            terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+            terminal.set_agent_name("worker".into());
+            terminal.parent_agent = Some("orchestrator".into());
+        }
+
+        let renamed = app.handle_agent_rename(
+            "req".into(),
+            AgentRenameParams {
+                target: "orchestrator".into(),
+                name: Some("conductor".into()),
+            },
+        );
+        assert!(
+            serde_json::from_str::<SuccessResponse>(&renamed).is_ok(),
+            "rename should succeed: {renamed}"
+        );
+
+        let child = &app.state.terminals[&child_terminal_id];
+        assert_eq!(
+            child.parent_agent.as_deref(),
+            Some("conductor"),
+            "the child must follow its parent's new name"
+        );
+    }
+
     #[tokio::test]
     async fn a_false_process_exit_makes_a_named_live_agent_unreachable_by_name() {
         // Reproduces the registration loss reported on #3225 by rszrszrsz:

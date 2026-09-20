@@ -168,6 +168,11 @@ pub struct AgentStartParams {
     pub name: String,
     pub kind: String,
     pub pane_id: String,
+    /// Name of the agent doing the spawning, recorded so the panel can draw
+    /// the tree. The caller knows this at spawn time and it is unrecoverable
+    /// afterwards, which is the whole reason it is accepted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.
@@ -188,6 +193,15 @@ pub struct AgentInfo {
     pub terminal_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Name of the agent that spawned this one, absent at the root of a tree.
+    ///
+    /// Carries the parent's `name`, so a consumer groups by joining this
+    /// against `name` with no id translation. Absent is the ordinary case —
+    /// hand-started agents and every agent predating this field have no
+    /// parent — so a consumer must render an unparented agent rather than
+    /// hide it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
