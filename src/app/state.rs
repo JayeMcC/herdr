@@ -693,6 +693,7 @@ pub enum AgentPanelSort {
     Spaces,
     Priority,
     Alphabetical,
+    Tree,
 }
 
 #[derive(Debug, Clone)]

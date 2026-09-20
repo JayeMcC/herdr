@@ -103,6 +103,10 @@ pub enum AgentPanelSortConfig {
     /// `spaces` preserves spawn order and `priority` orders by attention, so
     /// neither gives a stable, predictable position for a named fleet.
     Alphabetical,
+    /// Nest each agent under the agent that spawned it, siblings A-Z within
+    /// each level. Agents with no recorded parent are roots, so a fleet that
+    /// never records one still renders as a flat alphabetical list.
+    Tree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

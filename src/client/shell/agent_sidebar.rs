@@ -15,6 +15,140 @@ pub(super) struct AgentRow {
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// Nesting depth in tree mode; 0 in every other mode, so the existing
+    /// modes render exactly as they did before.
+    pub(super) depth: usize,
+}
+
+/// One row of the agent panel in tree order: the pane to render and how deep it
+/// sits. Depth is what the renderer turns into indentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AgentTreeRow {
+    pub(super) pane_id: String,
+    pub(super) depth: usize,
+}
+
+/// The name a tree row sorts under, and the one a child names as its parent.
+fn tree_sort_key(agent: &crate::protocol::ClientShellAgent) -> String {
+    agent
+        .name
+        .as_deref()
+        .or(agent.display_agent.as_deref())
+        .or(agent.terminal_title_stripped.as_deref())
+        .or(agent.terminal_title.as_deref())
+        .unwrap_or("")
+        .to_lowercase()
+}
+
+/// Arrange agents as a forest: every agent under the agent that spawned it,
+/// siblings alphabetical within each level.
+///
+/// Three properties matter more than the shape of the tree, because each one
+/// is a way rows could VANISH — and a panel that hides a working agent is worse
+/// than a panel with no tree at all:
+///
+///  1. An agent whose parent is unknown — unrecorded, already exited, or simply
+///     never set — is a ROOT. It is not dropped and not hidden under anything.
+///     This is the common case, not the exception: every agent started by hand,
+///     and every agent predating the parent field, has no parent.
+///  2. A cycle cannot starve a row. Parenting is validated at spawn so the
+///     graph should already be a forest, but a restored session could still
+///     present one, and "should not happen" is not a reason to lose an agent.
+///     Any agent not reached by the descent is emitted at the end.
+///  3. Every input appears exactly once. The count out equals the count in.
+fn tree_ordered_rows(agents: &[&crate::protocol::ClientShellAgent]) -> Vec<AgentTreeRow> {
+    use std::collections::{HashMap, HashSet};
+
+    // Index by name so a child can find its parent. An agent with no name
+    // cannot BE a parent (nothing can name it), but is perfectly fine as a
+    // child or a root.
+    let by_name: HashMap<&str, usize> = agents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, agent)| agent.name.as_deref().map(|name| (name, index)))
+        .collect();
+
+    let parent_of = |index: usize| -> Option<usize> {
+        let parent = agents[index].parent_agent.as_deref()?;
+        by_name
+            .get(parent)
+            .copied()
+            // An agent naming itself as parent is not renderable as a child of
+            // itself; treat it as a root rather than dropping it.
+            .filter(|resolved| *resolved != index)
+    };
+
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut roots = Vec::new();
+    for index in 0..agents.len() {
+        match parent_of(index) {
+            Some(parent) => children.entry(parent).or_default().push(index),
+            None => roots.push(index),
+        }
+    }
+
+    let sort_siblings = |siblings: &mut Vec<usize>| {
+        // Case-insensitive, because a fleet named by convention mixes cases and
+        // a byte-order sort would file every capitalised agent above every
+        // lowercase one. Pane id breaks ties so the order is stable rather than
+        // dependent on however the snapshot happened to arrive.
+        siblings.sort_by(|left, right| {
+            tree_sort_key(agents[*left])
+                .cmp(&tree_sort_key(agents[*right]))
+                .then_with(|| agents[*left].pane_id.cmp(&agents[*right].pane_id))
+        });
+    };
+
+    sort_siblings(&mut roots);
+    for siblings in children.values_mut() {
+        sort_siblings(siblings);
+    }
+
+    let mut rows = Vec::with_capacity(agents.len());
+    let mut emitted = HashSet::new();
+    // Explicit stack rather than recursion: depth is bounded only by what a
+    // restored session contains, and a deep chain must not blow the stack.
+    let mut stack: Vec<(usize, usize)> = roots.into_iter().rev().map(|root| (root, 0)).collect();
+    while let Some((index, depth)) = stack.pop() {
+        if !emitted.insert(index) {
+            continue;
+        }
+        rows.push(AgentTreeRow {
+            pane_id: agents[index].pane_id.clone(),
+            depth,
+        });
+        if let Some(kids) = children.get(&index) {
+            for child in kids.iter().rev() {
+                stack.push((*child, depth + 1));
+            }
+        }
+    }
+
+    // Anything the descent never reached is inside a cycle. Emit it at the root
+    // so it stays visible and reachable by keyboard.
+    let mut stranded = (0..agents.len())
+        .filter(|index| !emitted.contains(index))
+        .collect::<Vec<_>>();
+    sort_siblings(&mut stranded);
+    rows.extend(stranded.into_iter().map(|index| AgentTreeRow {
+        pane_id: agents[index].pane_id.clone(),
+        depth: 0,
+    }));
+
+    rows
+}
+
+/// Tree rows for the panel, or `None` when the active sort is not the tree.
+pub(super) fn agent_tree_rows(
+    snapshot: &ClientShellSnapshot,
+    sort: crate::config::AgentPanelSortConfig,
+) -> Option<Vec<AgentTreeRow>> {
+    if snapshot.agent_view_label.is_some() || sort != crate::config::AgentPanelSortConfig::Tree {
+        return None;
+    }
+    Some(tree_ordered_rows(
+        &snapshot.agents.iter().collect::<Vec<_>>(),
+    ))
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -33,6 +167,12 @@ pub(super) fn ordered_agent_pane_ids(
             })
             .cloned()
             .collect();
+    }
+    if let Some(rows) = agent_tree_rows(snapshot, sort) {
+        // Navigation reads the same order it renders: if the panel shows a
+        // child under its parent, ctrl-n must move there and not to whatever
+        // the unsorted snapshot happened to list next.
+        return rows.into_iter().map(|row| row.pane_id).collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
     if sort == crate::config::AgentPanelSortConfig::Priority {
@@ -122,6 +262,7 @@ pub(super) fn render_agent_panel_header(
         crate::config::AgentPanelSortConfig::Spaces => "grouped",
         crate::config::AgentPanelSortConfig::Priority => "priority",
         crate::config::AgentPanelSortConfig::Alphabetical => "a-z",
+        crate::config::AgentPanelSortConfig::Tree => "tree",
     });
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
     let sort_rect = Rect::new(
@@ -240,6 +381,16 @@ pub(super) fn agent_rows(
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
+    if let Some(tree) = agent_tree_rows(snapshot, config.agent_panel_sort) {
+        return tree
+            .into_iter()
+            .filter_map(|row| {
+                let mut built = agent_row(snapshot, &row.pane_id, config, machine)?;
+                built.depth = row.depth;
+                Some(built)
+            })
+            .collect();
+    }
     ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
         .into_iter()
         .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
@@ -316,6 +467,7 @@ pub(super) fn agent_row(
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        depth: 0,
     })
 }
 
@@ -354,8 +506,13 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
+    // Two columns per level, on top of the row's existing indent. Capped so a
+    // deep chain cannot push an agent's name off a narrow sidebar — a row that
+    // is indented past the edge is a row you cannot read, which is the same
+    // failure as hiding it.
+    let depth_indent = (row.depth * 2).min(rect.width.saturating_sub(8) as usize);
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = if index == 0 { 1 } else { 3 };
+        let indent = depth_indent + if index == 0 { 1 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
         spans.extend(crate::ui::resolved_token_spans(
             tokens,
@@ -393,5 +550,183 @@ fn sidebar_status_text(status: crate::api::schema::AgentStatus) -> &'static str 
         AgentStatus::Done => "done",
         AgentStatus::Working => "working",
         AgentStatus::Idle | AgentStatus::Unknown => "idle",
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::{tree_ordered_rows, AgentTreeRow};
+    use crate::api::schema::AgentStatus;
+    use crate::protocol::ClientShellAgent;
+
+    fn agent(name: &str, parent: Option<&str>) -> ClientShellAgent {
+        ClientShellAgent {
+            // Distinct from the name so an assertion on pane ids cannot pass by
+            // accidentally comparing names to themselves.
+            pane_id: format!("pane-{name}"),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some(name.into()),
+            parent_agent: parent.map(str::to_string),
+            display_agent: None,
+            agent: None,
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }
+    }
+
+    fn order(agents: &[ClientShellAgent]) -> Vec<AgentTreeRow> {
+        tree_ordered_rows(&agents.iter().collect::<Vec<_>>())
+    }
+
+    /// (pane_id, depth) pairs, which is exactly what the renderer consumes.
+    fn shape(rows: &[AgentTreeRow]) -> Vec<(&str, usize)> {
+        rows.iter()
+            .map(|row| (row.pane_id.as_str(), row.depth))
+            .collect()
+    }
+
+    #[test]
+    fn children_nest_under_the_agent_that_spawned_them() {
+        // The operator's ask: assistant -> orchestrators -> workers. Input is
+        // deliberately in the WRONG order, so passing requires actually
+        // rebuilding the hierarchy rather than echoing the input back.
+        let agents = [
+            agent("worker-b", Some("orchestrator")),
+            agent("assistant", None),
+            agent("orchestrator", Some("assistant")),
+            agent("worker-a", Some("orchestrator")),
+        ];
+        assert_eq!(
+            shape(&order(&agents)),
+            vec![
+                ("pane-assistant", 0),
+                ("pane-orchestrator", 1),
+                ("pane-worker-a", 2),
+                ("pane-worker-b", 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn siblings_sort_alphabetically_regardless_of_case() {
+        // "Banana" and "apple" DISCRIMINATE the two sorts: byte order puts
+        // every uppercase letter before every lowercase one, so a
+        // case-sensitive sort yields [Banana, apple] while case-insensitive
+        // yields [apple, Banana]. A pair like ["zeta", "Alpha"] sorts
+        // identically either way and would pass with the bug present — that
+        // exact mistake was made once in this repo already.
+        let agents = [
+            agent("root", None),
+            agent("Banana", Some("root")),
+            agent("apple", Some("root")),
+        ];
+        assert_eq!(
+            shape(&order(&agents)),
+            vec![("pane-root", 0), ("pane-apple", 1), ("pane-Banana", 1)]
+        );
+    }
+
+    #[test]
+    fn an_agent_with_no_parent_renders_at_the_root() {
+        // The hard requirement: an unparented agent must never vanish. This is
+        // the common case — every hand-started agent, and every agent that
+        // predates the parent field.
+        let agents = [agent("loner", None), agent("other", None)];
+        assert_eq!(
+            shape(&order(&agents)),
+            vec![("pane-loner", 0), ("pane-other", 0)]
+        );
+    }
+
+    #[test]
+    fn an_agent_whose_parent_is_missing_renders_at_the_root() {
+        // A parent that exited, or was never in this snapshot. The child must
+        // surface at the root rather than be hidden under a row that is not
+        // there — the failure mode is a working agent you cannot see.
+        let agents = [agent("orphan", Some("ghost")), agent("present", None)];
+        let rows = order(&agents);
+        assert_eq!(rows.len(), 2, "no agent may be dropped: {rows:?}");
+        assert_eq!(
+            shape(&rows),
+            vec![("pane-orphan", 0), ("pane-present", 0)]
+        );
+    }
+
+    #[test]
+    fn a_cycle_still_renders_every_agent() {
+        // Parenting is validated at spawn, so a cycle should not occur — but a
+        // restored session could still present one, and "should not happen" is
+        // not a reason to lose an agent from the panel.
+        let agents = [
+            agent("a", Some("b")),
+            agent("b", Some("a")),
+            agent("free", None),
+        ];
+        let rows = order(&agents);
+        assert_eq!(rows.len(), 3, "a cycle must not starve a row: {rows:?}");
+        let panes = rows
+            .iter()
+            .map(|row| row.pane_id.as_str())
+            .collect::<Vec<_>>();
+        for expected in ["pane-a", "pane-b", "pane-free"] {
+            assert!(panes.contains(&expected), "{expected} missing from {panes:?}");
+        }
+    }
+
+    #[test]
+    fn an_agent_naming_itself_as_its_parent_is_a_root() {
+        let agents = [agent("self", Some("self"))];
+        assert_eq!(shape(&order(&agents)), vec![("pane-self", 0)]);
+    }
+
+    #[test]
+    fn every_agent_appears_exactly_once() {
+        // The invariant that covers the failure modes no individual case
+        // names: the count out equals the count in, with no duplicates.
+        let agents = [
+            agent("assistant", None),
+            agent("meta", Some("assistant")),
+            agent("orchestrator", Some("assistant")),
+            agent("worker", Some("orchestrator")),
+            agent("orphan", Some("ghost")),
+            agent("loner", None),
+        ];
+        let rows = order(&agents);
+        assert_eq!(rows.len(), agents.len());
+        let mut panes = rows
+            .iter()
+            .map(|row| row.pane_id.clone())
+            .collect::<Vec<_>>();
+        panes.sort();
+        panes.dedup();
+        assert_eq!(panes.len(), agents.len(), "a pane was emitted twice");
+    }
+
+    #[test]
+    fn a_deep_chain_keeps_increasing_depth() {
+        // Depth is what becomes indentation, so it has to keep counting past
+        // the two levels the tier model names.
+        let agents = [
+            agent("l0", None),
+            agent("l1", Some("l0")),
+            agent("l2", Some("l1")),
+            agent("l3", Some("l2")),
+        ];
+        assert_eq!(
+            shape(&order(&agents)),
+            vec![
+                ("pane-l0", 0),
+                ("pane-l1", 1),
+                ("pane-l2", 2),
+                ("pane-l3", 3),
+            ]
+        );
     }
 }
