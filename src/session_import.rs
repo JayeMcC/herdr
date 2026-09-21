@@ -439,3 +439,153 @@ mod tests {
         assert_eq!(report.lost(), 1);
     }
 }
+
+// ---------------------------------------------------------------------------
+// One owner at a time
+// ---------------------------------------------------------------------------
+
+/// Why a lane may not be materialised right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnershipBlock {
+    /// Upstream herdr still records this session against one of its panes.
+    /// Resuming it would put a second process on one transcript.
+    HeldByUpstream { agent_name: Option<String> },
+    /// This fork already materialised the lane and has not released it.
+    AlreadyMaterialised { pane_id: String },
+}
+
+impl std::fmt::Display for OwnershipBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OwnershipBlock::HeldByUpstream { agent_name } => write!(
+                f,
+                "herdr still holds this session{}. Close that herdr pane first: \
+                 two processes appending to one transcript corrupts the conversation",
+                agent_name
+                    .as_deref()
+                    .map(|name| format!(" in its `{name}` pane"))
+                    .unwrap_or_default()
+            ),
+            OwnershipBlock::AlreadyMaterialised { pane_id } => {
+                write!(f, "already materialised in this session at pane {pane_id}")
+            }
+        }
+    }
+}
+
+/// Session uuids upstream herdr currently records against a live pane.
+///
+/// Read from herdr's `session.json` rather than its socket on purpose. The
+/// socket is version-gated: a newer client is refused by an older server with
+/// `protocol_mismatch`, which would make the safety check fail exactly when the
+/// two installs differ most. The state file has no such gate, and it is the
+/// same record herdr itself restores from.
+///
+/// Returns `None` when upstream state cannot be read at all. That is NOT
+/// "nothing is held" — it is "unknown", and callers must refuse rather than
+/// assume the lane is free.
+pub fn upstream_held_sessions() -> Option<BTreeMap<String, Option<String>>> {
+    let text = std::fs::read_to_string(upstream_snapshot_path()).ok()?;
+    let snapshot: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let mut held = BTreeMap::new();
+    for workspace in snapshot.get("workspaces")?.as_array()? {
+        let Some(tabs) = workspace.get("tabs").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for tab in tabs {
+            let Some(panes) = tab.get("panes").and_then(|value| value.as_object()) else {
+                continue;
+            };
+            for pane in panes.values() {
+                let Some(value) = pane
+                    .get("agent_session")
+                    .and_then(|session| session.get("value"))
+                    .and_then(|value| value.as_str())
+                else {
+                    continue;
+                };
+                let name = pane
+                    .get("agent_name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+                held.insert(value.to_string(), name);
+            }
+        }
+    }
+    Some(held)
+}
+
+/// Agent names must match the server's `[a-z][a-z0-9_-]{0,31}` rule, so an
+/// imported display name is sanitised rather than rejected.
+pub fn sanitized_agent_name(lane: &ImportedLane) -> String {
+    let raw = lane.agent_name.clone().unwrap_or_else(|| {
+        format!(
+            "lane-{}",
+            &lane.session_value[..8.min(lane.session_value.len())]
+        )
+    });
+    let mut name: String = raw
+        .chars()
+        .map(|ch| {
+            let lower = ch.to_ascii_lowercase();
+            if lower.is_ascii_lowercase() || lower.is_ascii_digit() || matches!(lower, '-' | '_') {
+                lower
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while !name.is_empty() && !name.starts_with(|ch: char| ch.is_ascii_lowercase()) {
+        name.remove(0);
+    }
+    if name.is_empty() {
+        name = format!(
+            "lane-{}",
+            &lane.session_value[..8.min(lane.session_value.len())]
+        );
+    }
+    name.truncate(32);
+    name
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn lane(name: Option<&str>) -> ImportedLane {
+        ImportedLane {
+            session_value: "dea56ee9-0146-407a-8fa2-e484575a3a38".into(),
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            agent_name: name.map(str::to_string),
+            cwd: PathBuf::from("/tmp"),
+            workspace_label: None,
+            state: ImportedLaneState::Parked,
+        }
+    }
+
+    #[test]
+    fn agent_names_are_coerced_to_the_servers_rule() {
+        assert_eq!(sanitized_agent_name(&lane(Some("r-4086-s2"))), "r-4086-s2");
+        // A leading digit is illegal for the server, so it is trimmed rather
+        // than silently failing at start time.
+        assert_eq!(sanitized_agent_name(&lane(Some("4086-epic"))), "epic");
+        assert_eq!(
+            sanitized_agent_name(&lane(Some("W-2erdr Fork"))),
+            "w-2erdr-fork"
+        );
+        // No usable name at all still yields a legal, uuid-derived one.
+        assert_eq!(sanitized_agent_name(&lane(None)), "lane-dea56ee9");
+        assert_eq!(sanitized_agent_name(&lane(Some("---"))), "lane-dea56ee9");
+    }
+
+    #[test]
+    fn a_held_lane_reports_who_holds_it() {
+        let block = OwnershipBlock::HeldByUpstream {
+            agent_name: Some("infra-fleet-health".into()),
+        };
+        let message = block.to_string();
+        assert!(message.contains("infra-fleet-health"));
+        assert!(message.contains("corrupts the conversation"));
+    }
+}

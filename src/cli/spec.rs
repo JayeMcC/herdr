@@ -760,6 +760,13 @@ fn session_command() -> Command {
                 .about("List imported lanes and their resume commands")
                 .arg(json_flag()),
         )
+        .subcommand(
+            Command::new("materialise")
+                .about("Open a pane for an imported lane and resume its agent there")
+                .arg(Arg::new("lane").value_name("NAME_OR_UUID").required(false))
+                .arg(flag("all").help("Materialise every imported lane that is free"))
+                .arg(json_flag()),
+        )
 }
 
 fn integration_command() -> Command {

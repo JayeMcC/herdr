@@ -432,6 +432,7 @@ fn run_session_command(args: &[String]) -> std::io::Result<i32> {
         "list" => session_list(&args[1..]),
         "import" => session_import(&args[1..]),
         "imported" => session_imported(&args[1..]),
+        "materialise" | "materialize" => session_materialise(&args[1..]),
         "attach" => session_attach_help(&args[1..]),
         "stop" => session_stop(&args[1..]),
         "delete" => session_delete(&args[1..]),
@@ -1050,6 +1051,8 @@ fn print_session_help() {
     eprintln!("  {name} session delete <name> [--json]");
     eprintln!("  {name} session import [--dry-run] [--json]   Import existing herdr lanes");
     eprintln!("  {name} session imported [--json]             List imported lanes");
+    eprintln!("  {name} session materialise <NAME|UUID|--all> [--json]");
+    eprintln!("      Open a pane for an imported lane and resume its agent there");
     eprintln!("  use 'default' as <name> to target the default session for stop");
 }
 
@@ -1141,6 +1144,236 @@ fn session_import(args: &[String]) -> std::io::Result<i32> {
     }
 
     if report.found == 0 || !report.is_complete() {
+        return Ok(1);
+    }
+    Ok(0)
+}
+
+/// Open a real pane for an imported lane and resume its agent in it.
+///
+/// This is the half that turns a recorded lane back into a running
+/// conversation: create a tab at the lane's recorded cwd, then start the agent
+/// in that tab's pane with `--resume <uuid>` so it continues the SAME
+/// transcript rather than beginning a new one.
+///
+/// # One owner at a time, enforced rather than documented
+///
+/// Before touching anything, this REFUSES any lane whose session uuid upstream
+/// herdr still records against one of its panes. Two processes appending to one
+/// transcript corrupts the conversation unrecoverably, so the check is a hard
+/// gate, not a warning: the lane is skipped and the command exits non-zero.
+///
+/// It also refuses when upstream state cannot be read at all. Unreadable is
+/// treated as "unknown", never as "free" — assuming a lane is free is exactly
+/// the mistake that corrupts a transcript.
+fn session_materialise(args: &[String]) -> std::io::Result<i32> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let all = args.iter().any(|arg| arg == "--all");
+    let selector = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .map(String::as_str);
+
+    if selector.is_none() && !all {
+        eprintln!(
+            "usage: {} session materialise <NAME|UUID|--all>",
+            crate::build_info::COMMAND_NAME
+        );
+        return Ok(2);
+    }
+
+    let state = crate::session_import::load_imported()?;
+    if state.lanes.is_empty() {
+        eprintln!(
+            "no imported lanes; run `{} session import` first",
+            crate::build_info::COMMAND_NAME
+        );
+        return Ok(1);
+    }
+
+    let selected: Vec<_> = state
+        .lanes
+        .values()
+        .filter(|lane| match selector {
+            None => true,
+            Some(want) => {
+                lane.session_value == want
+                    || lane.agent_name.as_deref() == Some(want)
+                    || crate::session_import::sanitized_agent_name(lane) == want
+            }
+        })
+        .cloned()
+        .collect();
+
+    if selected.is_empty() {
+        eprintln!("no imported lane matches {:?}", selector.unwrap_or("--all"));
+        return Ok(1);
+    }
+
+    // Unreadable upstream state is "unknown", not "free".
+    let Some(held) = crate::session_import::upstream_held_sessions() else {
+        eprintln!(
+            "refusing to materialise: cannot read herdr's session state, so it is unknown \
+             which sessions it still holds. Resuming a session herdr is hosting would put two \
+             processes on one transcript."
+        );
+        return Ok(1);
+    };
+
+    // This fork's own live panes count as owners too: materialising a lane
+    // twice would put two of OUR processes on one transcript, which is the
+    // same corruption by a different route.
+    let mut self_held: std::collections::BTreeMap<String, String> = Default::default();
+    if let Ok(value) = send_request(&Request {
+        id: "cli:session:materialise:list".into(),
+        method: Method::AgentList(crate::api::schema::EmptyParams::default()),
+    }) {
+        if let Some(agents) = value
+            .get("result")
+            .and_then(|result| result.get("agents"))
+            .and_then(|agents| agents.as_array())
+        {
+            for agent in agents {
+                let session = agent
+                    .get("agent_session")
+                    .and_then(|session| session.get("value"))
+                    .and_then(|value| value.as_str());
+                let pane = agent
+                    .get("pane_id")
+                    .and_then(|pane| pane.as_str())
+                    .unwrap_or("unknown");
+                if let Some(session) = session {
+                    self_held.insert(session.to_string(), pane.to_string());
+                }
+            }
+        }
+    }
+
+    let mut opened = Vec::new();
+    let mut refused = Vec::new();
+
+    for lane in selected {
+        if let Some(pane_id) = self_held.get(&lane.session_value) {
+            refused.push((
+                lane.clone(),
+                crate::session_import::OwnershipBlock::AlreadyMaterialised {
+                    pane_id: pane_id.clone(),
+                }
+                .to_string(),
+            ));
+            continue;
+        }
+        if let Some(agent_name) = held.get(&lane.session_value) {
+            refused.push((
+                lane.clone(),
+                crate::session_import::OwnershipBlock::HeldByUpstream {
+                    agent_name: agent_name.clone(),
+                }
+                .to_string(),
+            ));
+            continue;
+        }
+
+        let Some(argv) = lane.resume_argv() else {
+            refused.push((
+                lane.clone(),
+                "no resume command is known for this lane".to_string(),
+            ));
+            continue;
+        };
+        // resume_argv() leads with the executable; the server supplies that.
+        let agent_args: Vec<String> = argv.into_iter().skip(1).collect();
+        let name = crate::session_import::sanitized_agent_name(&lane);
+
+        let tab = match send_request(&Request {
+            id: "cli:session:materialise:tab".into(),
+            method: Method::TabCreate(crate::api::schema::TabCreateParams {
+                workspace_id: None,
+                cwd: Some(lane.cwd.display().to_string()),
+                focus: false,
+                label: Some(name.clone()),
+                env: Default::default(),
+            }),
+        }) {
+            Ok(value) => value,
+            Err(err) => {
+                refused.push((lane.clone(), format!("could not create a tab: {err}")));
+                continue;
+            }
+        };
+
+        let Some(pane_id) = tab
+            .get("result")
+            .and_then(|result| result.get("root_pane"))
+            .and_then(|pane| pane.get("pane_id"))
+            .and_then(|pane_id| pane_id.as_str())
+        else {
+            refused.push((
+                lane.clone(),
+                "tab was created but reported no pane".to_string(),
+            ));
+            continue;
+        };
+
+        match send_request(&Request {
+            id: "cli:session:materialise:agent".into(),
+            method: Method::AgentStart(crate::api::schema::AgentStartParams {
+                name: name.clone(),
+                kind: lane.agent.clone(),
+                pane_id: pane_id.to_string(),
+                args: agent_args,
+                timeout_ms: None,
+            }),
+        }) {
+            Ok(value) if value.get("error").is_none() => {
+                opened.push((lane.clone(), name, pane_id.to_string()));
+            }
+            Ok(value) => {
+                let message = value
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(|message| message.as_str())
+                    .unwrap_or("agent start failed")
+                    .to_string();
+                refused.push((lane.clone(), message));
+            }
+            Err(err) => refused.push((lane.clone(), format!("agent start failed: {err}"))),
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "session_materialise",
+                "opened": opened.iter().map(|(lane, name, pane)| serde_json::json!({
+                    "session_value": lane.session_value,
+                    "agent_name": name,
+                    "pane_id": pane,
+                    "cwd": lane.cwd,
+                })).collect::<Vec<_>>(),
+                "refused": refused.iter().map(|(lane, reason)| serde_json::json!({
+                    "session_value": lane.session_value,
+                    "agent_name": lane.agent_name,
+                    "reason": reason,
+                })).collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        for (lane, name, pane) in &opened {
+            println!("materialised {name} at pane {pane}");
+            println!("  resumed session {}", lane.session_value);
+            println!("  cwd {}", lane.cwd.display());
+        }
+        for (lane, reason) in &refused {
+            println!(
+                "REFUSED {}: {reason}",
+                lane.agent_name.as_deref().unwrap_or(&lane.session_value)
+            );
+        }
+    }
+
+    if !refused.is_empty() {
         return Ok(1);
     }
     Ok(0)
