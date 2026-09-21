@@ -1,5 +1,14 @@
 //! Build identity helpers.
 
+/// The name this build presents for itself in help, usage, version and error
+/// output. Fork identity only.
+///
+/// Distinct from [`crate::config::io::app_dir_name`], which names the on-disk
+/// state directory. Both say "twodr" here, but they answer different
+/// questions: this is "what do I call myself to the user", that is "where do I
+/// keep my files".
+pub const COMMAND_NAME: &str = "twodr";
+
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn channel() -> &'static str {

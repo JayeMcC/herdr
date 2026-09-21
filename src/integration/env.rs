@@ -5,9 +5,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use portable_pty::CommandBuilder;
 
-pub(crate) const HERDR_PANE_ID_ENV_VAR: &str = "HERDR_PANE_ID";
-pub(crate) const HERDR_TAB_ID_ENV_VAR: &str = "HERDR_TAB_ID";
-pub(crate) const HERDR_WORKSPACE_ID_ENV_VAR: &str = "HERDR_WORKSPACE_ID";
+pub(crate) const HERDR_PANE_ID_ENV_VAR: &str = "TWODR_PANE_ID";
+pub(crate) const HERDR_TAB_ID_ENV_VAR: &str = "TWODR_TAB_ID";
+pub(crate) const HERDR_WORKSPACE_ID_ENV_VAR: &str = "TWODR_WORKSPACE_ID";
 
 pub(crate) const PI_CODING_AGENT_DIR_ENV_VAR: &str = "PI_CODING_AGENT_DIR";
 pub(crate) const OMP_CONFIG_DIR_ENV_VAR: &str = "PI_CONFIG_DIR";
@@ -25,10 +25,32 @@ pub(crate) const GROK_CONFIG_DIR_ENV_VAR: &str = "GROK_CONFIG_DIR";
 pub(crate) const GROK_HOME_ENV_VAR: &str = "GROK_HOME";
 pub(crate) const HERMES_HOME_ENV_VAR: &str = "HERMES_HOME";
 
+/// Upstream-compatible aliases for the pane environment.
+///
+/// The integration assets installed into agent tools (`~/.claude/hooks/...`
+/// and friends) are SHARED with an upstream herdr install: both write the same
+/// file at the same path. They read `HERDR_*`.
+///
+/// So this fork exports BOTH prefixes into its panes: `TWODR_*` as the real
+/// contract, and the `HERDR_*` spelling as a compatibility alias, pointing at
+/// twodr's own socket and pane ids. That lets one unmodified hook serve either
+/// multiplexer, and means installing twodr's integrations does not rewrite the
+/// asset a running herdr fleet depends on.
+///
+/// Reading is NOT symmetric, and deliberately so: twodr only ever READS
+/// `TWODR_*`, so a twodr launched inside a herdr pane does not inherit herdr's
+/// socket and silently drive the other server.
+fn apply_upstream_env_alias(cmd: &mut CommandBuilder, upstream: &str, value: &std::ffi::OsStr) {
+    cmd.env(upstream, value);
+}
+
 pub(crate) fn apply_pane_base_env(cmd: &mut CommandBuilder) {
-    cmd.env(crate::api::SOCKET_PATH_ENV_VAR, crate::api::socket_path());
+    let socket_path = crate::api::socket_path();
+    cmd.env(crate::api::SOCKET_PATH_ENV_VAR, &socket_path);
+    apply_upstream_env_alias(cmd, "HERDR_SOCKET_PATH", socket_path.as_os_str());
     if let Ok(executable) = crate::platform::launch_executable() {
-        cmd.env("HERDR_BIN_PATH", executable);
+        cmd.env("TWODR_BIN_PATH", &executable);
+        apply_upstream_env_alias(cmd, "HERDR_BIN_PATH", executable.as_os_str());
     }
 }
 

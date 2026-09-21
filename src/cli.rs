@@ -430,6 +430,8 @@ fn run_session_command(args: &[String]) -> std::io::Result<i32> {
 
     match subcommand {
         "list" => session_list(&args[1..]),
+        "import" => session_import(&args[1..]),
+        "imported" => session_imported(&args[1..]),
         "attach" => session_attach_help(&args[1..]),
         "stop" => session_stop(&args[1..]),
         "delete" => session_delete(&args[1..]),
@@ -1040,12 +1042,174 @@ fn print_terminal_help() {
 }
 
 fn print_session_help() {
-    eprintln!("herdr session commands:");
-    eprintln!("  herdr session list [--json]");
-    eprintln!("  herdr session attach <name>");
-    eprintln!("  herdr session stop <name> [--json]");
-    eprintln!("  herdr session delete <name> [--json]");
+    let name = crate::build_info::COMMAND_NAME;
+    eprintln!("{name} session commands:");
+    eprintln!("  {name} session list [--json]");
+    eprintln!("  {name} session attach <name>");
+    eprintln!("  {name} session stop <name> [--json]");
+    eprintln!("  {name} session delete <name> [--json]");
+    eprintln!("  {name} session import [--dry-run] [--json]   Import existing herdr lanes");
+    eprintln!("  {name} session imported [--json]             List imported lanes");
     eprintln!("  use 'default' as <name> to target the default session for stop");
+}
+
+/// Import upstream herdr lanes into this fork's own state.
+///
+/// Exit codes are deliberate: a partial import must never exit 0 quietly.
+///   0 = every agent lane found was accounted for
+///   1 = at least one lane was skipped, or nothing was found
+///   2 = the upstream state could not be read at all
+fn session_import(args: &[String]) -> std::io::Result<i32> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let dry_run = args.iter().any(|arg| arg == "--dry-run");
+
+    let report = match crate::session_import::import_from_upstream(dry_run) {
+        Ok(report) => report,
+        Err(err) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"type": "session_import", "error": err.to_string()})
+                );
+            } else {
+                eprintln!("import failed: {err}");
+            }
+            return Ok(2);
+        }
+    };
+
+    let accounted = report.imported + report.already_present + report.updated;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "session_import",
+                "dry_run": dry_run,
+                "source": report.source,
+                "found": report.found,
+                "imported": report.imported,
+                "already_present": report.already_present,
+                "updated": report.updated,
+                "accounted": accounted,
+                "complete": report.is_complete(),
+                "lost": report.lost(),
+                "skipped": report.skipped
+                    .iter()
+                    .map(|skip| serde_json::json!({
+                        "reason": skip.reason,
+                        "agent_name": skip.agent_name,
+                        "cwd": skip.cwd,
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        let name = crate::build_info::COMMAND_NAME;
+        if dry_run {
+            println!("dry run — nothing was written");
+        }
+        println!("source: {} (read-only; not modified)", report.source);
+        println!(
+            "agent lanes: {} of {} accounted for ({} new, {} already present, {} refreshed)",
+            accounted, report.found, report.imported, report.already_present, report.updated
+        );
+        if !report.skipped.is_empty() {
+            println!(
+                "skipped {} ({} with a conversation to lose):",
+                report.skipped.len(),
+                report.lost()
+            );
+            for skip in &report.skipped {
+                println!(
+                    "  - {}{} [{}]: {}",
+                    if skip.lost_conversation { "LOST " } else { "" },
+                    skip.agent_name.as_deref().unwrap_or("(unnamed)"),
+                    skip.cwd.as_deref().unwrap_or("(no cwd)"),
+                    skip.reason
+                );
+            }
+        }
+        println!();
+        println!("Imported lanes are RECORDS, not running processes.");
+        println!("A live PTY cannot be transferred, so nothing here is attached to a");
+        println!("running agent. Each lane carries its session uuid, so the SAME");
+        println!("conversation continues by resuming it in a fresh pane:");
+        println!("  {name} session imported        # see the resume command per lane");
+        println!();
+        println!("Close the herdr pane hosting a lane BEFORE resuming it here.");
+        println!("Two processes appending to one transcript corrupts the conversation.");
+    }
+
+    if report.found == 0 || !report.is_complete() {
+        return Ok(1);
+    }
+    Ok(0)
+}
+
+/// List lanes already imported, with the command that resumes each.
+fn session_imported(args: &[String]) -> std::io::Result<i32> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let state = crate::session_import::load_imported()?;
+
+    if json {
+        let lanes = state
+            .lanes
+            .values()
+            .map(|lane| {
+                serde_json::json!({
+                    "session_value": lane.session_value,
+                    "source": lane.source,
+                    "agent": lane.agent,
+                    "agent_name": lane.agent_name,
+                    "cwd": lane.cwd,
+                    "workspace_label": lane.workspace_label,
+                    "state": lane.state,
+                    "resume_argv": lane.resume_argv(),
+                    "transcript_found":
+                        crate::session_import::transcript_exists(&lane.session_value),
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "session_imported",
+                "count": lanes.len(),
+                "lanes": lanes,
+            })
+        );
+        return Ok(0);
+    }
+
+    if state.lanes.is_empty() {
+        println!("no imported lanes");
+        println!("run: {} session import", crate::build_info::COMMAND_NAME);
+        return Ok(0);
+    }
+
+    println!(
+        "{} imported lane(s), all parked (no running process):",
+        state.lanes.len()
+    );
+    for lane in state.lanes.values() {
+        let transcript = if crate::session_import::transcript_exists(&lane.session_value) {
+            "transcript found"
+        } else {
+            "TRANSCRIPT NOT FOUND"
+        };
+        println!();
+        println!(
+            "  {}  [{}]",
+            lane.agent_name.as_deref().unwrap_or("(unnamed)"),
+            transcript
+        );
+        println!("    session: {}", lane.session_value);
+        println!("    cwd:     {}", lane.cwd.display());
+        if let Some(argv) = lane.resume_argv() {
+            println!("    resume:  {}", argv.join(" "));
+        }
+    }
+    Ok(0)
 }
 
 fn _print_json<T: Serialize>(value: &T) {

@@ -19,11 +19,61 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "worktrees",
 ];
 
+/// The on-disk state directory name for this build.
+///
+/// This fork is INDEPENDENT of upstream `herdr`: its own config dir, state dir
+/// and sockets, so both can run side by side without competing for one
+/// `session.json`. Existing herdr sessions come across explicitly and
+/// non-destructively via `twodr session import`.
+///
+/// Do not point this back at "herdr" to "share state": two servers writing one
+/// session.json corrupts both.
 pub fn app_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
-        "herdr-dev"
+        "twodr-dev"
     } else {
-        "herdr"
+        "twodr"
+    }
+}
+
+/// Upstream `herdr`'s state directory name. Read-only import source.
+pub fn upstream_app_dir_name() -> &'static str {
+    "herdr"
+}
+
+/// Upstream `herdr`'s config directory, used only as a read-only import
+/// source. Mirrors [`config_dir`] resolution so an `XDG_CONFIG_HOME` user finds
+/// their real herdr state.
+pub fn upstream_config_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(dir).join(upstream_app_dir_name());
+    }
+    upstream_platform_config_dir()
+}
+
+#[cfg(windows)]
+fn upstream_platform_config_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("APPDATA") {
+        return PathBuf::from(dir).join(upstream_app_dir_name());
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        return PathBuf::from(profile)
+            .join("AppData")
+            .join("Roaming")
+            .join(upstream_app_dir_name());
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(format!(".config/{}", upstream_app_dir_name()));
+    }
+    std::env::temp_dir().join(upstream_app_dir_name())
+}
+
+#[cfg(not(windows))]
+fn upstream_platform_config_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(format!(".config/{}", upstream_app_dir_name()))
+    } else {
+        std::env::temp_dir().join(upstream_app_dir_name())
     }
 }
 

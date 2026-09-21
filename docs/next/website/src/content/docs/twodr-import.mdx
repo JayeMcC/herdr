@@ -1,0 +1,91 @@
+---
+title: Importing herdr sessions
+description: Bring existing herdr lanes into twodr, and what can and cannot be carried across.
+---
+
+`twodr` is a fork of Herdr that keeps **its own state**: its own config
+directory, state directory, and sockets. That is what lets it run alongside an
+existing `herdr` install without the two fighting over one `session.json`.
+
+The cost of that independence is that a fresh `twodr` starts empty. `twodr
+session import` brings your existing lanes across.
+
+## Importing
+
+```bash
+twodr session import --dry-run   # report only, writes nothing
+twodr session import             # record the lanes
+twodr session imported           # list them with their resume commands
+```
+
+The import is:
+
+- **Non-destructive.** It opens herdr's `session.json` read-only and never
+  writes, moves, or mutates anything in herdr's directory. If the import is
+  wrong, your herdr install is untouched.
+- **Re-runnable.** Lanes are keyed on the agent session uuid, not the display
+  name, so importing twice records each conversation once. Display names are
+  not unique in practice, and keying on one would silently merge two distinct
+  conversations.
+- **Loud about gaps.** Every lane that could not be imported is listed with its
+  reason. A partial import exits non-zero; it never reports success quietly.
+
+## What is actually being moved
+
+A Claude Code session does not belong to Herdr. It is its own process, with its
+own transcript at `~/.claude/projects/<slug>/<session-uuid>.jsonl`. Herdr is a
+multiplexer: it owns the **pane**, not the **conversation**.
+
+So an import does not transfer ownership of a conversation. It copies the pane
+record, including the session uuid, which is the handle that re-opens that same
+conversation.
+
+## Resume, not adopt
+
+An imported lane is a **record**, not a running process, and is marked `parked`.
+
+To continue the conversation, resume it in a fresh pane:
+
+```bash
+claude --resume <session-uuid>
+```
+
+That is the **same conversation** with its full history, but a **new process**.
+`twodr session imported` prints the exact command for each lane.
+
+A live PTY cannot be handed between multiplexers per-lane (see below), so
+nothing that an import produces is attached to a running agent. This is
+deliberate: an import that produced dead panes which looked alive would be far
+worse than one that says plainly what it is.
+
+## One owner at a time
+
+:::caution
+Two processes appending to one transcript corrupts the conversation, and the
+transcript *is* the conversation. Close the herdr pane hosting a lane **before**
+resuming that lane in twodr.
+:::
+
+The design enforces this rather than relying on discipline: an imported lane
+arrives with **no process at all**, and twodr never auto-resumes one. Ownership
+moves only when a human closes the herdr pane and then explicitly resumes. There
+is no moment where both multiplexers are driving the same session, because at
+import time twodr is driving nothing.
+
+## Why the live process cannot be adopted
+
+Herdr does pass live PTY file descriptors between processes over `SCM_RIGHTS`,
+so this was investigated rather than assumed. It still cannot be used to adopt
+one lane, for three independent reasons:
+
+1. **It is whole-server, not per-lane.** The handoff sends descriptors for every
+   pane, then the old server removes its sockets and exits. There is no "hand me
+   just this lane" path. Using it would migrate every lane at once.
+2. **The old server initiates it.** The running server spawns the replacement
+   itself (`<exe> server --handoff-import <socket> <token>`). A separate binary
+   cannot volunteer to receive a handoff.
+3. **It is version-gated.** The receiving side rejects the transfer unless the
+   build version and protocol version match exactly.
+
+Adopting a live process would therefore require changes to the running Herdr
+server, not just to twodr.

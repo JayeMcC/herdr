@@ -215,7 +215,7 @@ fn print_ready_message(api_socket: &Path, client_socket: &Path) {
     eprintln!(
         "logs: {}",
         crate::session::data_dir()
-            .join("herdr-server.log")
+            .join("twodr-server.log")
             .display()
     );
     eprintln!("did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.");
@@ -223,5 +223,5 @@ fn print_ready_message(api_socket: &Path, client_socket: &Path) {
 
 /// Initialize logging for the server process.
 fn init_logging() {
-    crate::logging::init_file_logging("herdr-server.log");
+    crate::logging::init_file_logging("twodr-server.log");
 }

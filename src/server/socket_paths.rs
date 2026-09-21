@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// Contractual override behavior for auto-detect uses `HERDR_SOCKET_PATH`.
 /// This variable is kept as a fallback for callers that explicitly need a
 /// client-only override when `HERDR_SOCKET_PATH` is not set.
-pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "HERDR_CLIENT_SOCKET_PATH";
+pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "TWODR_CLIENT_SOCKET_PATH";
 
 /// Socket permission mode (owner read/write only).
 const SOCKET_PERMISSION_MODE: u32 = 0o600;
@@ -51,7 +51,7 @@ pub(crate) fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> Pa
     let stem = api_socket_path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("herdr");
+        .unwrap_or("twodr");
     let parent = api_socket_path.parent().unwrap_or_else(|| Path::new(""));
 
     parent.join(format!("{stem}-client.sock"))
