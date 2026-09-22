@@ -51,6 +51,8 @@ mod render_signal;
 mod selection;
 mod server;
 mod session;
+#[cfg(test)]
+mod test_env;
 mod sound;
 mod terminal;
 mod terminal_effects;
@@ -501,6 +503,11 @@ fn finish_cli(outcome: io::Result<cli::CommandOutcome>) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // Only the real binary takes CLI signal behavior (SIGPIPE -> SIG_DFL, so
+    // `herdr ... | head` dies quietly like any other CLI). The disposition is
+    // process-global, so the test harness must never inherit it.
+    platform::enable_cli_signal_behavior();
+
     let raw_args: Vec<String> = match args_as_utf8(std::env::args_os()) {
         Ok(args) => args,
         Err(err) => {

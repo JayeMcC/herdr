@@ -742,7 +742,6 @@ fn worktree_membership(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::api::schema::{
         ErrorResponse, Request, SuccessResponse, WorktreeCreateParams, WorktreeRemoveParams,
@@ -754,11 +753,9 @@ mod tests {
     use crate::{config::Config, workspace::Workspace};
 
     fn unique_temp_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
+        crate::test_env::unique_temp_path(&format!("herdr-{name}"))
     }
 
     fn run_git(repo: &Path, args: &[&str]) {

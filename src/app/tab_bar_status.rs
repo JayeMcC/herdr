@@ -541,13 +541,11 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock after epoch")
-            .as_nanos();
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
         std::path::PathBuf::from("/var/tmp").join(format!(
-            "herdr-tab-status-{name}-{}-{stamp}",
-            std::process::id()
+            "herdr-tab-status-{name}-{}",
+            crate::test_env::unique_token()
         ))
     }
 

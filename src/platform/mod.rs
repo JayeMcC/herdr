@@ -294,7 +294,8 @@ mod remote_bridge_tests;
 mod unix_common;
 #[cfg(unix)]
 pub(crate) use unix_common::{
-    begin_cli_output, end_cli_output, forward_remote_bridge_stdio, RemoteBridgeWake,
+    begin_cli_output, enable_cli_signal_behavior, end_cli_output, forward_remote_bridge_stdio,
+    RemoteBridgeWake,
 };
 
 mod client_state;
@@ -305,6 +306,10 @@ pub(crate) fn begin_cli_output() {}
 
 #[cfg(not(unix))]
 pub(crate) fn end_cli_output() {}
+
+/// No-op off unix: only the unix SIGPIPE disposition is process-global.
+#[cfg(not(unix))]
+pub(crate) fn enable_cli_signal_behavior() {}
 
 #[cfg(target_os = "linux")]
 mod linux;

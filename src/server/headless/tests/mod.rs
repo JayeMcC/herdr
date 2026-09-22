@@ -43,14 +43,10 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
     );
 
     app.state.default_shell = crate::app::exiting_test_command().into();
-    let dir = std::env::temp_dir().join(format!(
-        "hh-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    // A per-process counter, not a nanosecond clock: two of these tests
+    // running concurrently read the same nanosecond often enough to collide,
+    // and the loser failed to bind with AddrInUse.
+    let dir = crate::test_env::unique_temp_path("hh");
     let _ = fs::create_dir_all(&dir);
     let socket_path = dir.join("client.sock");
     let _ = fs::remove_file(&socket_path);

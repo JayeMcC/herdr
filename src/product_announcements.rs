@@ -231,18 +231,18 @@ mod tests {
     use super::*;
 
     fn env_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        // Delegates to the ONE crate-wide env mutex. A module-private lock
+        // here would serialise only this module's tests while a sibling
+        // module mutated the same process-global variables concurrently.
+        crate::test_env::env_mutex()
     }
 
     fn temp_path(name: &str) -> PathBuf {
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
         std::env::temp_dir().join(format!(
-            "herdr-product-announcements-{name}-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-product-announcements-{name}-{}.json",
+            crate::test_env::unique_token()
         ))
     }
 
