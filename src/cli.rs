@@ -1223,29 +1223,99 @@ fn session_materialise(args: &[String]) -> std::io::Result<i32> {
     // This fork's own live panes count as owners too: materialising a lane
     // twice would put two of OUR processes on one transcript, which is the
     // same corruption by a different route.
+    // Our own live panes count as owners too: materialising a lane twice puts
+    // two of OUR processes on one transcript, the same corruption by another
+    // route.
+    //
+    // A census read that FAILS is not an empty census. Treating an error as
+    // "nothing is held" is the shape that grants two callers one slot, because
+    // the check is then blind to everything it could not observe. So a failed
+    // read refuses rather than proceeding.
     let mut self_held: std::collections::BTreeMap<String, String> = Default::default();
-    if let Ok(value) = send_request(&Request {
+    let census = send_request(&Request {
         id: "cli:session:materialise:list".into(),
         method: Method::AgentList(crate::api::schema::EmptyParams::default()),
-    }) {
+    });
+    let census = match census {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!(
+                "refusing to materialise: cannot read this session's own agent list ({err}), so it \
+                 is unknown which sessions are already running here. Resuming a session that is \
+                 already live would put two processes on one transcript."
+            );
+            return Ok(1);
+        }
+    };
+    {
+        let value = census;
         if let Some(agents) = value
             .get("result")
             .and_then(|result| result.get("agents"))
             .and_then(|agents| agents.as_array())
         {
             for agent in agents {
-                let session = agent
-                    .get("agent_session")
-                    .and_then(|session| session.get("value"))
-                    .and_then(|value| value.as_str());
                 let pane = agent
                     .get("pane_id")
                     .and_then(|pane| pane.as_str())
                     .unwrap_or("unknown");
-                if let Some(session) = session {
+                // A live pane reports its agent_session only AFTER the agent
+                // boots and its SessionStart hook fires. Between `agent start`
+                // returning and that hook landing, a pane is already resuming a
+                // uuid the census cannot yet name, so keying ownership solely
+                // on agent_session is blind to exactly the window in which a
+                // double-materialise would happen.
+                //
+                // The PANE record carries the same session id and exists from
+                // pane creation, so it is read below as a second source and
+                // closes that window.
+                if let Some(session) = agent
+                    .get("agent_session")
+                    .and_then(|session| session.get("value"))
+                    .and_then(|value| value.as_str())
+                {
                     self_held.insert(session.to_string(), pane.to_string());
                 }
             }
+        }
+    }
+
+    // Second source: panes. A pane record carries agent_session as soon as the
+    // pane knows it, which can precede the agent appearing in the agent census.
+    // A failed read is again a refusal, not an empty result.
+    match send_request(&Request {
+        id: "cli:session:materialise:panes".into(),
+        method: Method::PaneList(Default::default()),
+    }) {
+        Ok(value) => {
+            if let Some(panes) = value
+                .get("result")
+                .and_then(|result| result.get("panes"))
+                .and_then(|panes| panes.as_array())
+            {
+                for pane in panes {
+                    let pane_id = pane
+                        .get("pane_id")
+                        .and_then(|pane_id| pane_id.as_str())
+                        .unwrap_or("unknown");
+                    if let Some(session) = pane
+                        .get("agent_session")
+                        .and_then(|session| session.get("value"))
+                        .and_then(|value| value.as_str())
+                    {
+                        self_held
+                            .entry(session.to_string())
+                            .or_insert_with(|| pane_id.to_string());
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "refusing to materialise: cannot read this session's panes ({err}), so it is \
+                 unknown which sessions are already running here."
+            );
+            return Ok(1);
         }
     }
 

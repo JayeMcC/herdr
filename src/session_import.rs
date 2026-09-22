@@ -589,3 +589,85 @@ mod ownership_tests {
         assert!(message.contains("corrupts the conversation"));
     }
 }
+
+#[cfg(test)]
+mod existing_store_tests {
+    use super::*;
+
+    /// A store that already holds rows, deserialized from the on-disk shape.
+    ///
+    /// Every other test in this file builds state from empty, which is exactly
+    /// the shape that cannot catch a migration or compatibility fault: a
+    /// schema change can leave all fresh-state tests green while every real
+    /// store on disk fails to load. (Live cost 2026-09-22 on the hub: a
+    /// `CREATE TABLE IF NOT EXISTS` no-opped on an existing table, the new
+    /// index referenced a column that did not exist, and the service failed to
+    /// boot while its suite stayed green because every test opened a fresh
+    /// database.)
+    fn store_with_existing_rows() -> &'static str {
+        r#"{
+          "version": 1,
+          "lanes": {
+            "dea56ee9-0146-407a-8fa2-e484575a3a38": {
+              "session_value": "dea56ee9-0146-407a-8fa2-e484575a3a38",
+              "source": "herdr:claude",
+              "agent": "claude",
+              "agent_name": "r-declined-pr-sweep",
+              "cwd": "/Users/jayemccracken/proj/forwood-one-review",
+              "workspace_label": null,
+              "state": "parked"
+            }
+          }
+        }"#
+    }
+
+    #[test]
+    fn a_store_written_by_an_earlier_build_still_loads() {
+        let parsed: ImportedLanes = serde_json::from_str(store_with_existing_rows())
+            .expect("an existing on-disk store must still deserialize");
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.lanes.len(), 1);
+        let lane = parsed
+            .lanes
+            .get("dea56ee9-0146-407a-8fa2-e484575a3a38")
+            .expect("existing row must survive a load");
+        assert_eq!(lane.agent_name.as_deref(), Some("r-declined-pr-sweep"));
+        assert_eq!(lane.state, ImportedLaneState::Parked);
+        // The resume handle is the whole point of the record: if a schema
+        // change breaks it, the conversation becomes unreachable.
+        assert_eq!(
+            lane.resume_argv(),
+            Some(vec![
+                "claude".to_string(),
+                "--resume".to_string(),
+                "dea56ee9-0146-407a-8fa2-e484575a3a38".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn re_importing_over_existing_rows_updates_rather_than_duplicates() {
+        let mut parsed: ImportedLanes =
+            serde_json::from_str(store_with_existing_rows()).expect("existing store must load");
+        let before = parsed.lanes.len();
+
+        // Same uuid, changed metadata — the re-run case against a NON-empty
+        // store, which is where a keying mistake shows up and an empty-store
+        // test cannot.
+        let mut moved = parsed
+            .lanes
+            .values()
+            .next()
+            .cloned()
+            .expect("fixture has one lane");
+        moved.cwd = PathBuf::from("/somewhere/else");
+        parsed.lanes.insert(moved.session_value.clone(), moved);
+
+        assert_eq!(parsed.lanes.len(), before, "same uuid must not add a row");
+        assert_eq!(
+            parsed.lanes.values().next().map(|lane| lane.cwd.clone()),
+            Some(PathBuf::from("/somewhere/else")),
+            "the existing row must be updated in place"
+        );
+    }
+}
