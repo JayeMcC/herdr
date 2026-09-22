@@ -53,6 +53,7 @@ mod server;
 mod session;
 mod session_import;
 mod sound;
+mod stack_placement;
 mod terminal;
 mod terminal_effects;
 mod terminal_modes;
