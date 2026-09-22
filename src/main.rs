@@ -51,6 +51,8 @@ mod render_signal;
 mod selection;
 mod server;
 mod session;
+#[cfg(test)]
+mod test_env;
 mod sound;
 mod terminal;
 mod terminal_effects;

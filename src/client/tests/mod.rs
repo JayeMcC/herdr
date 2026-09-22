@@ -1,10 +1,10 @@
 use super::*;
 use std::ffi::OsString;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    // Delegates to the ONE crate-wide env mutex; see crate::test_env.
+    crate::test_env::env_mutex()
 }
 
 #[test]

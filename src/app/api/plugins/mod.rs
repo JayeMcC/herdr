@@ -1026,6 +1026,10 @@ platforms = ["linux", "macos", "windows"]
 
     #[test]
     fn plugin_link_seeds_stable_config_dir_from_legacy_unhashed_dir() {
+        // Resolves plugin/config dirs from XDG_CONFIG_HOME and then writes to
+        // them, so it must be exclusive against the tests that rewrite it --
+        // otherwise the directory it seeds is not the one it later reads.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-link-legacy-config");
         let config_dir = super::env::plugin_config_dir("example.legacy-config");
@@ -1966,6 +1970,9 @@ command = ["sh", "-c", "printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \"$PWD\" \
     #[cfg(unix)]
     #[tokio::test]
     async fn plugin_pane_open_injects_plugin_paths_and_protects_overrides() {
+        // Reads config_dir(), which resolves XDG_CONFIG_HOME, so it must be
+        // exclusive against the tests that REWRITE that variable.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("plugin-path-env")];
         app.state.ensure_test_terminals();
@@ -2725,6 +2732,9 @@ command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_ACTION_ID\""]
     #[cfg(unix)]
     #[test]
     fn manifest_action_invoke_injects_plugin_paths() {
+        // Reads config_dir(), which resolves XDG_CONFIG_HOME, so it must be
+        // exclusive against the tests that REWRITE that variable.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-action-path-env");
         write_manifest_content(

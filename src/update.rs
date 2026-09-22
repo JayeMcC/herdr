@@ -2404,12 +2404,14 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
     use std::thread;
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        // Delegates to the ONE crate-wide env mutex. A module-private lock
+        // here would serialise only this module's tests while a sibling
+        // module mutated the same process-global variables concurrently.
+        crate::test_env::env_mutex()
     }
 
     fn unique_test_socket_path(name: &str) -> std::path::PathBuf {
