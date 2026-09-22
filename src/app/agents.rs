@@ -127,9 +127,25 @@ impl App {
         if terminal.effective_agent_label().is_none() {
             return Err(AgentRenameError::NotAgent);
         }
+        let previous_name = terminal.agent_name.clone();
         match normalized_name {
             Some(name) => terminal.set_agent_name(name),
             None => terminal.clear_agent_name(),
+        }
+        let new_name = terminal.agent_name.clone();
+        // Children hold the parent by NAME, so a rename that does not follow
+        // through leaves every child pointing at a name nobody answers to —
+        // and since an unresolvable parent renders at the root, the entire
+        // subtree would silently flatten. Re-point them instead. Clearing the
+        // name orphans the children deliberately: they render at the root,
+        // which is the graceful degradation, not a lost row.
+        if let Some(previous_name) = previous_name.filter(|previous| Some(previous) != new_name.as_ref())
+        {
+            for terminal in self.state.terminals.values_mut() {
+                if terminal.parent_agent.as_ref() == Some(&previous_name) {
+                    terminal.parent_agent = new_name.clone();
+                }
+            }
         }
         self.state.mark_session_dirty();
         self.schedule_session_save();
@@ -169,6 +185,23 @@ impl App {
                 candidates: conflicts,
             });
         }
+        // Resolve the parent before anything is mutated. An edge is only worth
+        // recording if it points at an agent that exists: a typo would
+        // otherwise persist a dangling name that no consumer can join, and the
+        // tree would silently lose the subtree under it. Self-parenting is
+        // rejected for the same reason a cycle is — it is not renderable.
+        let parent_agent = match params.parent_agent {
+            Some(parent) if parent == name => {
+                return Err(AgentStartError::InvalidParent(parent));
+            }
+            Some(parent) => {
+                if self.resolve_agent_target(&parent).is_err() {
+                    return Err(AgentStartError::ParentNotFound(parent));
+                }
+                Some(parent)
+            }
+            None => None,
+        };
         let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(&params.pane_id) else {
             return Err(AgentStartError::TargetNotFound(params.pane_id));
         };
@@ -215,6 +248,7 @@ impl App {
             .get_mut(&terminal_id)
             .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
         terminal.begin_managed_agent(name.clone(), kind, now, AGENT_START_SETTLE_DELAY, timeout);
+        terminal.parent_agent = parent_agent;
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             terminal.clear_agent_name();
             return Err(AgentStartError::InputFailed(err.to_string()));
@@ -267,6 +301,16 @@ impl App {
             AgentStartError::InputFailed(message) => crate::api::schema::ErrorBody {
                 code: "agent_start_input_failed".into(),
                 message,
+            },
+            AgentStartError::ParentNotFound(parent) => crate::api::schema::ErrorBody {
+                code: "agent_parent_not_found".into(),
+                message: format!(
+                    "parent agent {parent} does not exist; start it before its children, or omit the parent"
+                ),
+            },
+            AgentStartError::InvalidParent(parent) => crate::api::schema::ErrorBody {
+                code: "invalid_agent_parent".into(),
+                message: format!("agent {parent} cannot be its own parent"),
             },
             AgentStartError::DuplicateName { name, candidates } => crate::api::schema::ErrorBody {
                 code: "agent_name_taken".into(),
@@ -378,6 +422,7 @@ impl App {
         Some(crate::api::schema::AgentInfo {
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
+            parent_agent: terminal.parent_agent.clone(),
             agent: pane.agent,
             title: pane.title,
             terminal_title: pane.terminal_title,
@@ -454,6 +499,8 @@ pub(super) enum AgentStartError {
     TargetBusy(String),
     TargetUnavailable(String),
     InputFailed(String),
+    ParentNotFound(String),
+    InvalidParent(String),
     DuplicateName {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,

@@ -98,6 +98,7 @@ fn agent_start_and_prompt_requests_round_trip() {
             name: "reviewer".into(),
             kind: "pi".into(),
             pane_id: "w1:p2".into(),
+            parent_agent: None,
             args: vec!["--no-session".into()],
             timeout_ms: Some(30_000),
         }),

@@ -1349,6 +1349,13 @@
             "pane_id": {
               "type": "string"
             },
+            "parent_agent": {
+              "description": "Name of the agent doing the spawning, recorded so the panel can draw\nthe tree. The caller knows this at spawn time and it is unrecoverable\nafterwards, which is the whole reason it is accepted here.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "timeout_ms": {
               "description": "Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.",
               "format": "uint64",
@@ -6678,6 +6685,13 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "parent_agent": {
+              "description": "Name of the agent that spawned this one, absent at the root of a tree.\n\nCarries the parent's `name`, so a consumer groups by joining this\nagainst `name` with no id translation. Absent is the ordinary case —\nhand-started agents and every agent predating this field have no\nparent — so a consumer must render an unparented agent rather than\nhide it.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "revision": {
               "format": "uint64",

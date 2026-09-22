@@ -1965,11 +1965,20 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.agent_sort_toggle, point) {
+                    // Click cycles through every mode: grouped -> priority ->
+                    // a-z -> tree -> grouped. Every mode is reachable by mouse;
+                    // a mode that exists only in config is one nobody finds.
                     let sort = match self.config.agent_panel_sort {
                         crate::config::AgentPanelSortConfig::Spaces => {
                             crate::config::AgentPanelSortConfig::Priority
                         }
                         crate::config::AgentPanelSortConfig::Priority => {
+                            crate::config::AgentPanelSortConfig::Alphabetical
+                        }
+                        crate::config::AgentPanelSortConfig::Alphabetical => {
+                            crate::config::AgentPanelSortConfig::Tree
+                        }
+                        crate::config::AgentPanelSortConfig::Tree => {
                             crate::config::AgentPanelSortConfig::Spaces
                         }
                     };
