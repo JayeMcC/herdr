@@ -1393,6 +1393,15 @@ fn session_materialise(args: &[String]) -> std::io::Result<i32> {
                 pane_id: pane_id.to_string(),
                 args: agent_args,
                 timeout_ms: None,
+                // An imported lane has no recorded spawner: upstream's session
+                // snapshot stores cwd, agent name and session id, but nothing
+                // about which agent started it. Inventing an edge here would
+                // put a wrong branch in the tree, which is worse than a root —
+                // a lane at the root reads as "parent unknown", while a wrong
+                // parent reads as fact. Materialised lanes therefore render as
+                // roots until something that knows the real parentage records
+                // it.
+                parent_agent: None,
             }),
         }) {
             Ok(value) if value.get("error").is_none() => {

@@ -508,15 +508,10 @@ fn report_unmaterialised_lanes(response: &serde_json::Value) {
         pending.len()
     );
     for lane in &pending {
-        eprintln!(
-            "  {}",
-            crate::session_import::sanitized_agent_name(lane)
-        );
+        eprintln!("  {}", crate::session_import::sanitized_agent_name(lane));
     }
     eprintln!("open them with: {name} session materialise <NAME|--all>");
-    eprintln!(
-        "(a lane herdr still holds is refused, not opened — one owner per transcript)"
-    );
+    eprintln!("(a lane herdr still holds is refused, not opened — one owner per transcript)");
 }
 
 fn agent_get(args: &[String]) -> std::io::Result<i32> {

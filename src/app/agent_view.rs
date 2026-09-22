@@ -102,7 +102,12 @@ pub(crate) fn apply_agent_view(app: &AppState, entries: &mut Vec<AgentPanelEntry
                 let name = entry
                     .agent_kind_label
                     .as_deref()
-                    .or_else(|| entry.tokens.get("terminal_title_stripped").map(String::as_str))
+                    .or_else(|| {
+                        entry
+                            .tokens
+                            .get("terminal_title_stripped")
+                            .map(String::as_str)
+                    })
                     .or_else(|| entry.tokens.get("terminal_title").map(String::as_str))
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
@@ -431,7 +436,10 @@ mod tests {
     /// Build entries carrying explicit labels, then apply the panel sort the
     /// way `agent_panel_entries_from` does, so the assertion is about the sort
     /// and not about how the fixture happens to be built.
-    fn sorted_labels(sort: crate::app::state::AgentPanelSort, labels: &[Option<&str>]) -> Vec<String> {
+    fn sorted_labels(
+        sort: crate::app::state::AgentPanelSort,
+        labels: &[Option<&str>],
+    ) -> Vec<String> {
         let mut state = state_with_agents();
         state.agent_panel_sort = sort;
         let mut entries = projected_entries(&state);

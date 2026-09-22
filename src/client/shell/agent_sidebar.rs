@@ -653,10 +653,7 @@ mod tree_tests {
         let agents = [agent("orphan", Some("ghost")), agent("present", None)];
         let rows = order(&agents);
         assert_eq!(rows.len(), 2, "no agent may be dropped: {rows:?}");
-        assert_eq!(
-            shape(&rows),
-            vec![("pane-orphan", 0), ("pane-present", 0)]
-        );
+        assert_eq!(shape(&rows), vec![("pane-orphan", 0), ("pane-present", 0)]);
     }
 
     #[test]
@@ -676,7 +673,10 @@ mod tree_tests {
             .map(|row| row.pane_id.as_str())
             .collect::<Vec<_>>();
         for expected in ["pane-a", "pane-b", "pane-free"] {
-            assert!(panes.contains(&expected), "{expected} missing from {panes:?}");
+            assert!(
+                panes.contains(&expected),
+                "{expected} missing from {panes:?}"
+            );
         }
     }
 

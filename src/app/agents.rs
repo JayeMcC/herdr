@@ -139,7 +139,8 @@ impl App {
         // subtree would silently flatten. Re-point them instead. Clearing the
         // name orphans the children deliberately: they render at the root,
         // which is the graceful degradation, not a lost row.
-        if let Some(previous_name) = previous_name.filter(|previous| Some(previous) != new_name.as_ref())
+        if let Some(previous_name) =
+            previous_name.filter(|previous| Some(previous) != new_name.as_ref())
         {
             for terminal in self.state.terminals.values_mut() {
                 if terminal.parent_agent.as_ref() == Some(&previous_name) {
