@@ -104,6 +104,9 @@ mod tests {
 
     #[test]
     fn client_socket_path_defaults_to_config_dir() {
+        // Both REMOVES a process-global variable and resolves config_dir()
+        // from the environment, so it needs the shared env lock.
+        let _guard = crate::test_env::env_lock();
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
         crate::session::clear_explicit_session_for_test();
         let path = client_socket_path_from_overrides(None, None);

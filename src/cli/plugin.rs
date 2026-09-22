@@ -1828,6 +1828,9 @@ mod tests {
 
     #[test]
     fn cli_user_dir_creation_seeds_legacy_config_before_printing_config_dir() {
+        // Resolves plugin and config dirs from XDG_CONFIG_HOME, then writes
+        // to them, so it must be exclusive against tests that rewrite it.
+        let _guard = crate::test_env::env_lock();
         let plugin_id = unique_plugin_id("legacy-config");
         let config_dir = crate::plugin_paths::plugin_config_dir(&plugin_id);
         let state_dir = crate::plugin_paths::plugin_state_dir(&plugin_id);

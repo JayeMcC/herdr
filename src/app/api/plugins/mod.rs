@@ -997,6 +997,9 @@ action = "bootstrap"
 
     #[test]
     fn plugin_link_creates_stable_config_and_state_dirs() {
+        // Resolves plugin dirs from XDG_CONFIG_HOME and then asserts they
+        // exist, so it must be exclusive against the tests that rewrite it.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-link-dirs");
         let config_dir = super::env::plugin_config_dir("example.config-dirs");

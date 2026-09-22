@@ -241,6 +241,9 @@ claude = "on"
 
     #[test]
     fn sound_path_resolution_prefers_specific_over_global() {
+        // Resolves paths relative to config_path(), which reads
+        // HERDR_CONFIG_PATH; a concurrent rewrite moves the expected root.
+        let _guard = crate::test_env::env_lock();
         let config: Config = toml::from_str(
             r#"
 [ui.sound]
