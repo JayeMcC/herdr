@@ -288,7 +288,7 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]");
+        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--parent NAME] [--timeout MS] [-- <agent-args...>]");
         return Ok(2);
     };
     let separator = args
@@ -297,6 +297,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         .unwrap_or(args.len());
     let mut kind = None;
     let mut pane_id = None;
+    let mut parent_agent = None;
     let mut timeout_ms = None;
     let mut index = 1;
     while index < separator {
@@ -315,6 +316,14 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 pane_id = Some(super::normalize_pane_id(value));
+                index += 2;
+            }
+            "--parent" => {
+                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
+                    eprintln!("missing value for --parent");
+                    return Ok(2);
+                };
+                parent_agent = Some(value.clone());
                 index += 2;
             }
             "--timeout" => {
@@ -375,6 +384,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 name: name.clone(),
                 kind: kind.clone(),
                 pane_id: pane_id.clone(),
+                parent_agent: parent_agent.clone(),
                 args: agent_args.clone(),
                 timeout_ms,
             }),

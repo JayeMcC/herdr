@@ -492,6 +492,7 @@ fn restore_tab(
 
         let saved_label = saved_pane.and_then(|p| p.label.clone());
         let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
+        let saved_parent_agent = saved_pane.and_then(|p| p.parent_agent.clone());
         let saved_managed_agent = saved_pane
             .and_then(|pane| pane.managed_agent_kind.as_deref())
             .and_then(crate::detect::parse_canonical_agent_label);
@@ -550,6 +551,11 @@ fn restore_tab(
                 (Some(_), None) => {}
                 (None, _) => {}
             }
+            // Restored even when the parent itself did not come back. A child
+            // whose parent is gone resolves to nothing and renders at the
+            // root, which is the intended degradation; dropping the edge here
+            // would instead make a surviving parent lose its children.
+            terminal.parent_agent = saved_parent_agent;
             if let Some(agent) = initial_restore_agent {
                 let _ = terminal.set_detected_state_with_screen_signals_at(
                     Some(agent),
@@ -648,6 +654,13 @@ fn restore_tab(
                     (Some(agent_name), None) if was_imported => terminal.set_agent_name(agent_name),
                     (Some(_), None) => {}
                     (None, _) => {}
+                }
+                // Only meaningful alongside a restored agent identity: a cold
+                // restore that dropped the name dropped the agent with it, and
+                // a parent edge hanging off a plain shell would point a tree
+                // row at something the panel does not list.
+                if terminal.agent_name.is_some() {
+                    terminal.parent_agent = saved_parent_agent;
                 }
                 if let Some(agent) = initial_restore_agent {
                     let _ = terminal.set_detected_state_with_screen_signals_at(
@@ -1190,6 +1203,7 @@ mod tests {
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
+                            parent_agent: None,
                             managed_agent_kind: Some("opencode".into()),
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "herdr:opencode".into(),
@@ -1276,6 +1290,7 @@ mod tests {
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
+                                parent_agent: None,
                                 managed_agent_kind: None,
                                 agent_session: None,
                                 launch_argv: None,
@@ -1287,6 +1302,7 @@ mod tests {
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
+                                parent_agent: None,
                                 managed_agent_kind: None,
                                 agent_session: None,
                                 launch_argv: None,
@@ -1340,6 +1356,7 @@ mod tests {
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
+                    parent_agent: None,
                     managed_agent_kind: None,
                     agent_session: None,
                     launch_argv: None,
@@ -1350,6 +1367,7 @@ mod tests {
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
+            parent_agent: None,
             managed_agent_kind: None,
             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "herdr:codex".into(),
@@ -1501,6 +1519,7 @@ mod tests {
                             cwd,
                             label: None,
                             agent_name: None,
+                            parent_agent: None,
                             managed_agent_kind: None,
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "herdr:codex".into(),
@@ -1667,6 +1686,7 @@ mod tests {
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,
+                parent_agent: None,
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,

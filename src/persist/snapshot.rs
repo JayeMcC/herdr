@@ -102,6 +102,8 @@ pub struct PaneSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_agent_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
@@ -334,6 +336,10 @@ fn capture_tab(
                 )
             })
             .unwrap_or_default();
+        // Saved unconditionally, unlike agent_name: the parent edge is not
+        // invalidated by a launch still being pending, and dropping it there
+        // would flatten a subtree across a restart that happened mid-spawn.
+        let parent_agent = terminal.and_then(|terminal| terminal.parent_agent.clone());
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
         let agent_session = terminal.and_then(|terminal| {
             if let Some(authority) = terminal.hook_authority.as_ref() {
@@ -362,6 +368,7 @@ fn capture_tab(
                 cwd,
                 label,
                 agent_name,
+                parent_agent,
                 managed_agent_kind,
                 agent_session,
                 launch_argv,
@@ -643,6 +650,7 @@ mod tests {
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
+                parent_agent: None,
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
@@ -654,6 +662,7 @@ mod tests {
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
+                parent_agent: None,
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
@@ -1207,6 +1216,7 @@ mod tests {
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
+                parent_agent: None,
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
@@ -1220,6 +1230,7 @@ mod tests {
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),
                 label: None,
                 agent_name: None,
+                parent_agent: None,
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,

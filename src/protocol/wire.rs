@@ -1078,6 +1078,11 @@ pub struct ClientShellAgent {
     pub workspace_id: String,
     pub tab_id: String,
     pub name: Option<String>,
+    /// Name of the agent that spawned this one; `None` at the root of a tree.
+    /// Carried to the client because the tree is drawn client-side, from this
+    /// snapshot alone.
+    #[serde(default)]
+    pub parent_agent: Option<String>,
     pub display_agent: Option<String>,
     pub agent: Option<String>,
     pub title: Option<String>,
