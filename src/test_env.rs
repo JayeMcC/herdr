@@ -109,3 +109,33 @@ impl Drop for ScopedEnv {
         }
     }
 }
+
+/// A temp path that is unique even between two threads in the same process.
+///
+/// The common idiom in this crate is `format!("x-{}-{}", process::id(),
+/// SystemTime::now().as_nanos())`. The pid is shared by every test in the
+/// run, so uniqueness rests entirely on the clock -- and two tests running
+/// concurrently CAN read the same nanosecond, at which point both build the
+/// same path and the second one fails with `AddrInUse` or clobbers the
+/// first's files. The failure is rare, load-dependent, and lands on whichever
+/// test happened to lose, which is exactly the shape that makes a suite
+/// unable to answer "did my change break something".
+///
+/// A monotonically increasing counter cannot collide within the process, and
+/// the pid still separates concurrent processes.
+pub(crate) fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{prefix}-{}", unique_token()))
+}
+
+/// The `<pid>-<counter>` token behind [`unique_temp_path`], for the callers
+/// that must assemble a path themselves (a fixed `/tmp` directory to stay
+/// under the unix socket length limit, a particular extension, and so on).
+pub(crate) fn unique_token() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}

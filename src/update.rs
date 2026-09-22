@@ -2466,13 +2466,11 @@ mod tests {
     }
 
     fn unique_test_socket_path(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
         std::path::PathBuf::from(format!(
-            "/tmp/hu-{name}-{}-{nanos}.sock",
-            std::process::id()
+            "/tmp/hu-{name}-{}.sock",
+            crate::test_env::unique_token()
         ))
     }
 

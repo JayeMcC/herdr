@@ -1003,11 +1003,9 @@ mod tests {
     }
 
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("herdr-{name}-{}-{stamp}", std::process::id()))
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
+        crate::test_env::unique_temp_path(&format!("herdr-{name}"))
     }
 
     fn config_env_lock() -> &'static Mutex<()> {

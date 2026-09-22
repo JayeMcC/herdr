@@ -238,13 +238,11 @@ mod tests {
     }
 
     fn temp_path(name: &str) -> PathBuf {
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
         std::env::temp_dir().join(format!(
-            "herdr-product-announcements-{name}-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-product-announcements-{name}-{}.json",
+            crate::test_env::unique_token()
         ))
     }
 

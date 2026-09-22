@@ -811,7 +811,6 @@ mod tests {
     use crate::api::schema::{
         Method, PluginSourceInfo, PluginSourceKind, Request, SuccessResponse,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
     async fn pane_link_resolve_checks_staleness_without_side_effects() {
@@ -895,12 +894,13 @@ mod tests {
             .result
     }
 
+    /// A per-process counter, not a nanosecond clock. Two concurrent tests
+    /// can read the same nanosecond and then share a directory. The counter
+    /// is also ~18 characters shorter, which matters because these paths
+    /// carry a unix socket: a nanosecond-suffixed path overran the 104-byte
+    /// sun_path limit and surfaced as EINVAL ("Invalid argument").
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+        crate::test_env::unique_temp_path(&format!("herdr-{name}"))
     }
 
     fn canonical_path_string(path: &std::path::Path) -> String {

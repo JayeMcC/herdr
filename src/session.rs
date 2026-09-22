@@ -507,11 +507,9 @@ mod tests {
 
     #[cfg(unix)]
     fn unique_test_path(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
+        crate::test_env::unique_temp_path(&format!("herdr-{name}"))
     }
 
     #[cfg(unix)]
