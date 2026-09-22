@@ -26,9 +26,21 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 /// The one mutex guarding the process environment. Every module-private
 /// `env_lock()` in this crate now returns THIS, so two tests in two different
 /// modules can no longer each hold their own lock and interleave.
+///
+/// Poison is cleared on the way out. Callers overwhelmingly write
+/// `env_lock().lock().unwrap()`, which on a poisoned mutex panics with
+/// `PoisonError` -- so ONE test that fails while holding the lock converts
+/// every later test into a second, fake failure and buries the original
+/// cause. Poisoning tells us nothing useful here: the guarded data is `()`,
+/// and each test installs the environment it needs rather than inheriting
+/// it. Clearing the flag keeps a real failure to ONE reported failure.
 pub(crate) fn env_mutex() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    let mutex = LOCK.get_or_init(|| Mutex::new(()));
+    if mutex.is_poisoned() {
+        mutex.clear_poison();
+    }
+    mutex
 }
 
 /// Takes the lock, recovering rather than propagating poison: one test

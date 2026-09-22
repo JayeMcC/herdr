@@ -1122,12 +1122,28 @@ pub(crate) fn parse_self_update_args(args: &[String]) -> Result<SelfUpdateOption
     Ok(options)
 }
 
+/// Whether an update prompt may read an answer from the user.
+///
+/// Reads the real stdin in the binary. Under test it reads an override
+/// instead: the suite must be able to exercise the NON-interactive branch
+/// regardless of how the runner was launched. Asserting on the ambient
+/// stdin made these tests pass under a redirected CI stdin and fail when
+/// the same unchanged tree was run from a terminal -- an environmental
+/// dependency dressed as a test.
+fn update_prompts_are_interactive() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = tests::forced_interactivity() {
+        return forced;
+    }
+    io::stdin().is_terminal()
+}
+
 #[cfg(not(windows))]
 fn prompt_to_stop_old_servers_before_update(
     plans: &[RunningServerUpdatePlan],
     release: &ReleaseInfo,
 ) -> Result<bool, String> {
-    if !io::stdin().is_terminal() {
+    if !update_prompts_are_interactive() {
         return Err(
             "one or more Herdr sessions must stop for this update. Stop running Herdr sessions when ready, then run `herdr update` again from an interactive terminal."
                 .to_string(),
@@ -1253,7 +1269,7 @@ fn prompt_to_complete_plain_update(
         return Ok(true);
     }
 
-    if !io::stdin().is_terminal() {
+    if !update_prompts_are_interactive() {
         return Ok(false);
     }
 
@@ -1410,7 +1426,7 @@ fn prompt_to_stop_old_server_after_failed_handoff(
     );
     eprintln!("stopping the old server will exit its pane processes.");
 
-    if !io::stdin().is_terminal() {
+    if !update_prompts_are_interactive() {
         eprintln!(
             "not stopping the old server from a non-interactive update; run `{}` when you are ready.",
             plan.stop_command()
@@ -2407,6 +2423,41 @@ mod tests {
     use std::sync::Mutex;
     use std::thread;
 
+    /// Forces [`super::update_prompts_are_interactive`] for the duration of a
+    /// test. Only ever read while the env lock is held, so the two tests that
+    /// set it cannot observe each other's value.
+    static FORCED_INTERACTIVITY: Mutex<Option<bool>> = Mutex::new(None);
+
+    pub(super) fn forced_interactivity() -> Option<bool> {
+        FORCED_INTERACTIVITY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Restores the previous value on drop, including on a panic, so a failing
+    /// test cannot leave the override armed for whatever runs next.
+    struct ForcedInteractivity(Option<bool>);
+
+    impl ForcedInteractivity {
+        fn set(value: bool) -> Self {
+            let mut slot = FORCED_INTERACTIVITY
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = slot.replace(value);
+            Self(previous)
+        }
+    }
+
+    impl Drop for ForcedInteractivity {
+        fn drop(&mut self) {
+            let mut slot = FORCED_INTERACTIVITY
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = self.0;
+        }
+    }
+
     fn env_lock() -> &'static Mutex<()> {
         // Delegates to the ONE crate-wide env mutex. A module-private lock
         // here would serialise only this module's tests while a sibling
@@ -2902,10 +2953,13 @@ mod tests {
 
     #[test]
     fn plain_update_defers_stop_prompt_until_after_install() {
-        assert!(
-            !io::stdin().is_terminal(),
-            "this test relies on noninteractive test stdin"
-        );
+        // The interactivity override is process-global, so it is taken under
+        // the same env lock as every other process-global mutation.
+        let _guard = env_lock().lock().unwrap();
+        // Declare non-interactivity instead of depending on how the test
+        // runner was launched: a tmux/terminal stdin IS a tty, so the old
+        // ambient assertion failed on an unchanged tree.
+        let _stdin = ForcedInteractivity::set(false);
         let release = fake_release("9.8.7", Some(77));
         let plan = RunningServerUpdatePlan {
             target: RunningUpdateTarget {
@@ -3104,10 +3158,10 @@ mod tests {
     #[test]
     fn noninteractive_plain_update_does_not_complete_with_running_server() {
         let _guard = env_lock().lock().unwrap();
-        assert!(
-            !io::stdin().is_terminal(),
-            "this test relies on noninteractive test stdin"
-        );
+        // Declare non-interactivity instead of depending on how the test
+        // runner was launched: a tmux/terminal stdin IS a tty, so the old
+        // ambient assertion failed on an unchanged tree.
+        let _stdin = ForcedInteractivity::set(false);
         std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
         crate::session::clear_explicit_session_for_test();
         let server = crate::api::RuntimeStatus {
@@ -3160,10 +3214,13 @@ mod tests {
 
     #[test]
     fn noninteractive_plain_update_completes_with_compatible_server() {
-        assert!(
-            !io::stdin().is_terminal(),
-            "this test relies on noninteractive test stdin"
-        );
+        // The interactivity override is process-global, so it is taken under
+        // the same env lock as every other process-global mutation.
+        let _guard = env_lock().lock().unwrap();
+        // Declare non-interactivity instead of depending on how the test
+        // runner was launched: a tmux/terminal stdin IS a tty, so the old
+        // ambient assertion failed on an unchanged tree.
+        let _stdin = ForcedInteractivity::set(false);
         let release = fake_release("9.8.7", Some(77));
         let plan = RunningServerUpdatePlan {
             target: RunningUpdateTarget {
