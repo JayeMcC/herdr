@@ -40,6 +40,21 @@ pub(crate) const HERMES_HOME_ENV_VAR: &str = "HERMES_HOME";
 /// Reading is NOT symmetric, and deliberately so: twodr only ever READS
 /// `TWODR_*`, so a twodr launched inside a herdr pane does not inherit herdr's
 /// socket and silently drive the other server.
+///
+/// # The alias is a trap for supervisors, so it carries its own binary
+///
+/// External supervisors (firstmate is the known one) AUTO-DETECT herdr from
+/// `HERDR_ENV=1` and then invoke whichever `herdr` is first on `PATH`. In a
+/// twodr pane that combination is wrong in a specific way: the identity vars
+/// describe TWODR's socket while the binary is upstream herdr, so the
+/// supervisor speaks an older protocol to this server and every call fails
+/// with `protocol_mismatch` (measured: client 19 against server 22).
+///
+/// `HERDR_BIN_PATH` therefore points at THIS binary, which is the documented
+/// way a supervisor learns which client owns the pane. A supervisor that
+/// honours it works unmodified; one that hardcodes `herdr` from `PATH` gets a
+/// loud protocol error rather than silently driving the wrong server, which is
+/// the safer of the two failures.
 fn apply_upstream_env_alias(cmd: &mut CommandBuilder, upstream: &str, value: &std::ffi::OsStr) {
     cmd.env(upstream, value);
 }
@@ -311,5 +326,41 @@ mod tests {
             Some(value) => std::env::set_var("XDG_STATE_HOME", value),
             None => std::env::remove_var("XDG_STATE_HOME"),
         }
+    }
+}
+
+#[cfg(test)]
+mod supervisor_contract_tests {
+    /// External supervisors auto-detect this multiplexer from `HERDR_ENV=1`
+    /// and read pane identity from these exact names. Renaming or dropping one
+    /// silently breaks every supervisor rather than failing loudly, so the set
+    /// is pinned here.
+    ///
+    /// Verified live 2026-09-22 inside a twodr pane: all six are exported and
+    /// resolve to twodr's own session, alongside their `TWODR_*` equivalents.
+    const SUPERVISOR_REQUIRED_PANE_ENV: &[&str] = &[
+        "HERDR_ENV",
+        "HERDR_PANE_ID",
+        "HERDR_SOCKET_PATH",
+        "HERDR_TAB_ID",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_BIN_PATH",
+    ];
+
+    #[test]
+    fn the_supervisor_identity_contract_is_not_silently_narrowed() {
+        // HERDR_BIN_PATH is the escape hatch that makes the rest safe: the
+        // other five describe THIS server, so a supervisor that resolves a
+        // bare `herdr` from PATH would drive the wrong one. Pointing it at the
+        // running binary is what lets an unmodified supervisor stay correct.
+        assert!(
+            SUPERVISOR_REQUIRED_PANE_ENV.contains(&"HERDR_BIN_PATH"),
+            "dropping HERDR_BIN_PATH leaves supervisors resolving `herdr` from PATH"
+        );
+        assert_eq!(
+            SUPERVISOR_REQUIRED_PANE_ENV.len(),
+            6,
+            "narrowing this set breaks supervisor auto-detection; widen deliberately"
+        );
     }
 }
