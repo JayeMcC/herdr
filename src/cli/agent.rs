@@ -441,10 +441,72 @@ fn agent_list(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    super::print_response(&super::send_request(&Request {
+    let response = super::send_request(&Request {
         id: "cli:agent:list".into(),
         method: Method::AgentList(EmptyParams::default()),
-    })?)
+    })?;
+    let code = super::print_response(&response)?;
+    report_unmaterialised_lanes(&response);
+    Ok(code)
+}
+
+/// An empty agent list next to a populated import store is the state that reads
+/// as "the import did nothing". It is not: the lanes are recorded and parked,
+/// and one command away from being real panes. Say so.
+///
+/// Written to stderr so `agent list` stdout stays machine-parseable, and only
+/// for lanes that are NOT already running here — a lane with a live pane is
+/// listed above, so naming it again would be noise.
+fn report_unmaterialised_lanes(response: &serde_json::Value) {
+    let Ok(state) = crate::session_import::load_imported() else {
+        return;
+    };
+    if state.lanes.is_empty() {
+        return;
+    }
+
+    let live: std::collections::BTreeSet<&str> = response
+        .get("result")
+        .and_then(|result| result.get("agents"))
+        .and_then(|agents| agents.as_array())
+        .map(|agents| {
+            agents
+                .iter()
+                .filter_map(|agent| {
+                    agent
+                        .get("agent_session")
+                        .and_then(|session| session.get("value"))
+                        .and_then(|value| value.as_str())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let pending: Vec<&crate::session_import::ImportedLane> = state
+        .lanes
+        .values()
+        .filter(|lane| !live.contains(lane.session_value.as_str()))
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+
+    let name = crate::build_info::COMMAND_NAME;
+    eprintln!();
+    eprintln!(
+        "{} imported lane(s) are recorded but have no pane here yet:",
+        pending.len()
+    );
+    for lane in &pending {
+        eprintln!(
+            "  {}",
+            crate::session_import::sanitized_agent_name(lane)
+        );
+    }
+    eprintln!("open them with: {name} session materialise <NAME|--all>");
+    eprintln!(
+        "(a lane herdr still holds is refused, not opened — one owner per transcript)"
+    );
 }
 
 fn agent_get(args: &[String]) -> std::io::Result<i32> {
