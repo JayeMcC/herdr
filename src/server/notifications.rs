@@ -94,12 +94,8 @@ mod tests {
         let root = state.workspaces[0].tabs[0].root_pane;
         let terminal_id = state.workspaces[0].terminal_id(root).cloned().unwrap();
         let temp_root = std::env::temp_dir().join(format!(
-            "herdr-forwarded-toast-context-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-forwarded-toast-context-{}",
+            crate::test_env::unique_token()
         ));
         let stale_cwd = temp_root.join("__herdr_original__");
         let live_cwd = temp_root.join("__herdr_projects__");

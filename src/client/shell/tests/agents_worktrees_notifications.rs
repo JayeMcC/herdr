@@ -741,12 +741,8 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
 #[test]
 fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
     let path = std::env::temp_dir().join(format!(
-        "herdr-shell-agent-sort-{}-{}.json",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
+        "herdr-shell-agent-sort-{}.json",
+        crate::test_env::unique_token()
     ));
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {

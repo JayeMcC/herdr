@@ -418,12 +418,8 @@ mod tests {
         shutdown_test_runtimes(&mut app);
 
         let focused_cwd = std::env::temp_dir().join(format!(
-            "herdr-ws-follow-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-ws-follow-{}",
+            crate::test_env::unique_token()
         ));
         std::fs::create_dir_all(&focused_cwd).unwrap();
         let ws = &app.state.workspaces[0];

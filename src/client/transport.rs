@@ -167,12 +167,8 @@ mod tests {
     #[test]
     fn upload_cancellation_preserves_pending_endpoint_download() {
         let path = std::env::temp_dir().join(format!(
-            "herdr-cancel-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-cancel-{}.sock",
+            crate::test_env::unique_token()
         ));
         let listener = crate::ipc::bind_private_local_listener(&path).unwrap();
         let client = crate::ipc::connect_local_stream(&path).unwrap();

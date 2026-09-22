@@ -814,6 +814,10 @@ mod tests {
 
     #[tokio::test]
     async fn pane_link_resolve_checks_staleness_without_side_effects() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("hover")];
         app.state.ensure_test_terminals();
@@ -1476,6 +1480,10 @@ platforms = ["linux", "macos"]
 
     #[test]
     fn plugin_enable_disable_updates_registry_state() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-enable-disable");
         write_manifest(&root);
@@ -1527,6 +1535,10 @@ platforms = ["linux", "macos"]
 
     #[test]
     fn plugin_pane_open_requires_installed_plugin() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let response = app.handle_api_request(Request {
             id: "pane-open".into(),
@@ -1550,6 +1562,10 @@ platforms = ["linux", "macos"]
 
     #[test]
     fn plugin_pane_open_rejects_popup_size_for_non_popup_placement() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-pane-non-popup-size-param");
         write_manifest(&root);
@@ -1580,6 +1596,10 @@ platforms = ["linux", "macos"]
     #[cfg(windows)]
     #[tokio::test]
     async fn windows_plugin_pane_commands_resolve_from_plugin_root_with_cwd_override() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         use std::os::windows::ffi::OsStrExt;
 
         let mut app = test_app();
@@ -1748,6 +1768,10 @@ command = ["cmd.exe", "/d", "/c", "slot.cmd", "default"]
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn plugin_launch_survives_executable_replacement() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         const CHILD_ROOT: &str = "HERDR_TEST_PLUGIN_REPLACEMENT_ROOT";
         if let Some(root) = std::env::var_os(CHILD_ROOT) {
             let root = std::path::PathBuf::from(root);
@@ -1823,12 +1847,8 @@ command = ["sh", "-c", '"$HERDR_BIN_PATH" --list >/dev/null; printf "%s\n" "$?" 
         }
 
         let root = std::path::PathBuf::from("/var/tmp").join(format!(
-            "herdr-plugin-update-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-plugin-update-{}",
+            crate::test_env::unique_token()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let executable = root.join("herdr test");
@@ -1854,6 +1874,10 @@ command = ["sh", "-c", '"$HERDR_BIN_PATH" --list >/dev/null; printf "%s\n" "$?" 
     #[cfg(unix)]
     #[tokio::test]
     async fn plugin_pane_open_uses_plugin_root_title_env_and_target_context() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let mut workspace = crate::workspace::Workspace::test_new("plugin-target");
         workspace.custom_name = None;
@@ -2073,6 +2097,10 @@ command = ["sh", "-c", "printf '%s\n%s\n%s\n' \"$HERDR_PLUGIN_ROOT\" \"$HERDR_PL
     #[cfg(unix)]
     #[tokio::test]
     async fn plugin_pane_open_tab_emits_tab_created_before_pane_created() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -2156,6 +2184,10 @@ command = ["sh", "-c", "sleep 1"]
     #[cfg(unix)]
     #[tokio::test]
     async fn plugin_pane_open_zoomed_split_emits_layout_updated() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -2235,6 +2267,10 @@ command = ["sh", "-c", "sleep 1"]
     #[cfg(unix)]
     #[tokio::test]
     async fn plugin_pane_open_overlay_emits_layout_updated() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -2314,6 +2350,10 @@ command = ["sh", "-c", "sleep 1"]
     #[cfg(unix)]
     #[tokio::test]
     async fn plugin_pane_open_popup_is_layout_neutral() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -2428,6 +2468,10 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
 
     #[test]
     fn manifest_action_list_and_invoke_with_context() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-action-list");
         write_manifest(&root);
@@ -2506,6 +2550,10 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
 
     #[test]
     fn stale_registry_entries_are_visible_but_not_runnable() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-stale-registry");
         write_manifest(&root);
@@ -2668,6 +2716,10 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
     #[cfg(unix)]
     #[test]
     fn manifest_action_invoke_runs_command_and_captures_log() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-action-runner");
         write_manifest_content(
@@ -2847,6 +2899,10 @@ command = ["sh", "-c", "printf '%s\n%s\n%s' \"$HERDR_PLUGIN_ROOT\" \"$HERDR_PLUG
     #[cfg(unix)]
     #[test]
     fn startup_hooks_run_once_with_plugin_environment() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-startup-hook");
         let capture = root.join("startup.txt");
@@ -2884,6 +2940,10 @@ command = ["sh", "-c", "printf '%s:%s' \"$HERDR_PLUGIN_ID\" \"$HERDR_PLUGIN_EVEN
     #[cfg(unix)]
     #[test]
     fn event_hooks_use_event_target_context() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         app.state.workspaces = vec![
             crate::workspace::Workspace::test_new("active"),
@@ -2952,6 +3012,10 @@ command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > {}"]
 
     #[test]
     fn plugin_command_limit_rejects_and_logs() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-command-limit");
         write_manifest(&root);
@@ -3109,6 +3173,10 @@ command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > {}"]
     #[cfg(unix)]
     #[test]
     fn plugin_link_handler_invokes_action_with_clicked_url_context() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("link-handler")];
         app.state.ensure_test_terminals();
@@ -3182,6 +3250,10 @@ action = "open"
 
     #[test]
     fn plugin_link_handlers_keep_manifest_order_for_overlapping_patterns() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-link-handler-order");
         write_manifest_content(
@@ -3312,6 +3384,10 @@ action = "missing"
 
     #[test]
     fn manifest_action_invoke_builds_default_workspace_context() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("issue")];
         app.state.workspaces[0].identity_cwd = "/tmp/issue".into();
@@ -3519,6 +3595,10 @@ command = ["sh", "-c", "echo ok"]
 
     #[test]
     fn output_changed_event_hooks_do_not_run_even_if_event_is_emitted() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-output-hook");
         write_manifest_with_bad_event(&root);
@@ -3543,6 +3623,10 @@ command = ["sh", "-c", "echo ok"]
 
     #[test]
     fn unlink_removes_plugin_pane_records_for_that_plugin() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let mut app = test_app();
         let root = unique_temp_path("plugin-unlink-panes");
         write_manifest(&root);
@@ -3667,6 +3751,10 @@ command = ["sh", "-c", "echo ok"]
 
     #[test]
     fn registry_round_trip_via_explicit_path() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let root = unique_temp_path("plugin-registry-rt");
         write_manifest(&root);
 
@@ -3701,6 +3789,10 @@ command = ["sh", "-c", "echo ok"]
 
     #[test]
     fn reload_manifests_keeps_entry_with_warning_when_manifest_gone() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let root = unique_temp_path("plugin-missing-manifest");
         write_manifest(&root);
 
@@ -4018,6 +4110,10 @@ command = ["act"]
 
     #[test]
     fn registry_round_trip_preserves_platforms() {
+        // Resolves the plugin user dirs, which derive from config_dir() /
+        // state_dir() and therefore from XDG_CONFIG_HOME. Without the env
+        // lock a sibling test's rewrite lands mid-call.
+        let _guard = crate::test_env::env_lock();
         let root = unique_temp_path("plugin-platform-rt");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(

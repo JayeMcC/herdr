@@ -196,14 +196,10 @@ mod tests {
     use super::*;
 
     fn writer(protect_unloaded: bool) -> SessionWriter {
-        let directory = std::env::temp_dir().join(format!(
-            "herdr-session-recovery-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // A per-process counter, not a nanosecond clock: two tests reading
+        // the same nanosecond shared this directory, so one test's
+        // remove_dir_all raced the other's files and failed DirectoryNotEmpty.
+        let directory = crate::test_env::unique_temp_path("herdr-session-recovery");
         std::fs::create_dir_all(&directory).unwrap();
         SessionWriter {
             path: directory.join("session.json"),

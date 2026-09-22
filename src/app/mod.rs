@@ -1014,12 +1014,8 @@ mod tests {
 
     fn temp_config_path(name: &str) -> std::path::PathBuf {
         let unique = format!(
-            "herdr-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-{name}-{}",
+            crate::test_env::unique_token()
         );
         std::env::temp_dir().join(unique).join("config.toml")
     }
