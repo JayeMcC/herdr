@@ -27,6 +27,7 @@ fn agent(
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
         name: Some(name.into()),
+        parent_agent: None,
         display_agent: None,
         agent: Some("pi".into()),
         title: None,

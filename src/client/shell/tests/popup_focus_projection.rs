@@ -924,6 +924,7 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
             name: Some(format!("agent-{index}")),
+            parent_agent: None,
             display_agent: None,
             agent: Some("codex".into()),
             title: None,

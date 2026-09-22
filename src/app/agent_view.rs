@@ -81,6 +81,39 @@ pub(crate) fn apply_agent_view(app: &AppState, entries: &mut Vec<AgentPanelEntry
             )
         });
     }
+
+    if matches!(
+        app.agent_panel_sort,
+        crate::app::state::AgentPanelSort::Alphabetical
+    ) {
+        // Order by the name the operator READS, so the panel position of a given
+        // agent is predictable. `spaces` leaves spawn order (an agent moves only
+        // because of when it started) and `priority` reorders as attention
+        // changes — neither lets you find a known agent by name.
+        //
+        // Sorts on the same string the sidebar renders: the agent's own label
+        // when it has one, else its terminal title. An entry with neither sorts
+        // last rather than colliding at the top, so unnamed panes never displace
+        // named agents. Comparison is case-insensitive because a fleet named by
+        // convention mixes cases (`a-audit-structure`, `EAP-3940 hub`) and a
+        // byte-order sort would scatter them.
+        entries.sort_by(|left, right| {
+            fn sort_key(entry: &AgentPanelEntry) -> (u8, String) {
+                let name = entry
+                    .agent_kind_label
+                    .as_deref()
+                    .or_else(|| entry.tokens.get("terminal_title_stripped").map(String::as_str))
+                    .or_else(|| entry.tokens.get("terminal_title").map(String::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                match name {
+                    Some(value) => (0, value.to_lowercase()),
+                    None => (1, String::new()),
+                }
+            }
+            sort_key(left).cmp(&sort_key(right))
+        });
+    }
 }
 
 pub(crate) fn presented_workspace_idx(app: &AppState) -> Option<usize> {
@@ -393,6 +426,67 @@ mod tests {
             }),
             sort: Vec::new(),
         }
+    }
+
+    /// Build entries carrying explicit labels, then apply the panel sort the
+    /// way `agent_panel_entries_from` does, so the assertion is about the sort
+    /// and not about how the fixture happens to be built.
+    fn sorted_labels(sort: crate::app::state::AgentPanelSort, labels: &[Option<&str>]) -> Vec<String> {
+        let mut state = state_with_agents();
+        state.agent_panel_sort = sort;
+        let mut entries = projected_entries(&state);
+        // The fixture yields one entry per workspace; give each the label under
+        // test. More labels than entries is a fixture error, not a sort result.
+        assert!(labels.len() <= entries.len(), "fixture has too few entries");
+        entries.truncate(labels.len());
+        for (entry, label) in entries.iter_mut().zip(labels) {
+            entry.agent_kind_label = label.map(str::to_string);
+            entry.tokens.clear();
+        }
+        apply_agent_view(&state, &mut entries);
+        entries
+            .iter()
+            .map(|entry| entry.agent_kind_label.clone().unwrap_or_else(|| "-".into()))
+            .collect()
+    }
+
+    #[test]
+    fn alphabetical_sort_orders_by_name_case_insensitively() {
+        // These two names DISCRIMINATE the two sorts, which `zeta`/`Alpha` did
+        // not: byte order puts every uppercase letter before every lowercase
+        // one, so case-sensitive yields [Banana, apple] while case-insensitive
+        // yields [apple, Banana]. Verified by planting a case-sensitive
+        // mutation — with the earlier pair the test passed WITH the bug.
+        //
+        // That matters for a fleet named by convention, where
+        // `a-audit-structure` sits beside `EAP-3940 hub`: a byte-order sort
+        // would file every capitalised agent above every lowercase one.
+        let sorted = sorted_labels(
+            crate::app::state::AgentPanelSort::Alphabetical,
+            &[Some("Banana"), Some("apple")],
+        );
+        assert_eq!(sorted, vec!["apple".to_string(), "Banana".to_string()]);
+    }
+
+    #[test]
+    fn alphabetical_sort_puts_unnamed_entries_last() {
+        // An unnamed pane must never displace a named agent at the top.
+        let sorted = sorted_labels(
+            crate::app::state::AgentPanelSort::Alphabetical,
+            &[None, Some("zeta")],
+        );
+        assert_eq!(sorted, vec!["zeta".to_string(), "-".to_string()]);
+    }
+
+    #[test]
+    fn spaces_sort_leaves_entry_order_untouched() {
+        // The control: the default mode must NOT reorder, or the test above
+        // would pass for the wrong reason.
+        let sorted = sorted_labels(
+            crate::app::state::AgentPanelSort::Spaces,
+            &[Some("zeta"), Some("Alpha")],
+        );
+        assert_eq!(sorted, vec!["zeta".to_string(), "Alpha".to_string()]);
     }
 
     #[test]

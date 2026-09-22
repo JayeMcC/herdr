@@ -140,6 +140,7 @@ pub(super) fn snapshot(
                 workspace_id: agent.workspace_id,
                 tab_id: agent.tab_id,
                 name: agent.name,
+                parent_agent: agent.parent_agent,
                 display_agent: agent.display_agent,
                 agent: agent.agent,
                 title: agent.title,

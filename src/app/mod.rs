@@ -194,6 +194,8 @@ fn agent_panel_sort_from_config(
     match sort {
         crate::config::AgentPanelSortConfig::Spaces => state::AgentPanelSort::Spaces,
         crate::config::AgentPanelSortConfig::Priority => state::AgentPanelSort::Priority,
+        crate::config::AgentPanelSortConfig::Alphabetical => state::AgentPanelSort::Alphabetical,
+        crate::config::AgentPanelSortConfig::Tree => state::AgentPanelSort::Tree,
     }
 }
 
@@ -2798,6 +2800,7 @@ mod tests {
                 name: "worker".into(),
                 kind: "pi".into(),
                 pane_id,
+                parent_agent: None,
                 args: Vec::new(),
                 timeout_ms: Some(1_000),
             }),
@@ -2840,6 +2843,7 @@ mod tests {
                 name: "worker".into(),
                 kind: "codex".into(),
                 pane_id: pane_id.clone(),
+                parent_agent: None,
                 args: vec!["resume".into(), "codex-session".into()],
                 timeout_ms: Some(4_000),
             }),
