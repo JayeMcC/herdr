@@ -18,6 +18,15 @@ pub(super) struct AgentRow {
     /// Nesting depth in tree mode; 0 in every other mode, so the existing
     /// modes render exactly as they did before.
     pub(super) depth: usize,
+    /// Space heading drawn on its own line above this row (tree mode only).
+    pub(super) heading: Option<String>,
+}
+
+impl AgentRow {
+    /// Lines this row occupies, its heading included.
+    pub(super) fn line_count(&self) -> usize {
+        self.rows.len().max(1) + usize::from(self.heading.is_some())
+    }
 }
 
 /// One row of the agent panel in tree order: the pane to render and how deep it
@@ -26,6 +35,9 @@ pub(super) struct AgentRow {
 pub(super) struct AgentTreeRow {
     pub(super) pane_id: String,
     pub(super) depth: usize,
+    /// The space heading shown above this row: set on the first row of each
+    /// space group, `None` on every other row.
+    pub(super) heading: Option<String>,
 }
 
 /// The name a tree row sorts under, and the one a child names as its parent.
@@ -116,6 +128,7 @@ fn tree_ordered_rows(agents: &[&crate::protocol::ClientShellAgent]) -> Vec<Agent
         rows.push(AgentTreeRow {
             pane_id: agents[index].pane_id.clone(),
             depth,
+            heading: None,
         });
         if let Some(kids) = children.get(&index) {
             for child in kids.iter().rev() {
@@ -133,8 +146,80 @@ fn tree_ordered_rows(agents: &[&crate::protocol::ClientShellAgent]) -> Vec<Agent
     rows.extend(stranded.into_iter().map(|index| AgentTreeRow {
         pane_id: agents[index].pane_id.clone(),
         depth: 0,
+        heading: None,
     }));
 
+    rows
+}
+
+/// The fleet's tier spaces, in the order the operator reads them.
+const TIER_SPACES: [&str; 4] = ["assistant", "infra", "meta", "work"];
+/// Heading for agents whose space is not in the snapshot.
+const UNPLACED_SPACE: &str = "other";
+
+/// The space an agent is grouped under: the top-level part of its space's
+/// label, so an agent in `work/o-dev-5068` groups under `work`.
+fn top_level_space<'a>(snapshot: &'a ClientShellSnapshot, workspace_id: &str) -> &'a str {
+    snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == workspace_id)
+        .map(|workspace| {
+            workspace
+                .label
+                .split_once('/')
+                .map_or(workspace.label.as_str(), |(parent, _)| parent)
+        })
+        .filter(|label| !label.is_empty())
+        .unwrap_or(UNPLACED_SPACE)
+}
+
+/// Tree mode: agents grouped by space first (tier spaces in tier order, then
+/// any other space alphabetically, then agents with no known space), each
+/// group the same parent forest `tree_ordered_rows` builds.
+///
+/// A subtree is placed by its ROOT's space, so a worker always renders under
+/// its orchestrator even when its tab sits in a different space — splitting a
+/// worker away from the agent that spawned it is exactly what the tree exists
+/// to prevent. Grouping only reorders whole subtrees, so every agent still
+/// appears exactly once.
+pub(super) fn space_grouped_tree_rows(snapshot: &ClientShellSnapshot) -> Vec<AgentTreeRow> {
+    let forest = tree_ordered_rows(&snapshot.agents.iter().collect::<Vec<_>>());
+    let space_of = |pane_id: &str| {
+        snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .map_or(UNPLACED_SPACE, |agent| {
+                top_level_space(snapshot, &agent.workspace_id)
+            })
+    };
+    let mut subtrees: Vec<(&str, Vec<AgentTreeRow>)> = Vec::new();
+    for row in forest {
+        if row.depth == 0 || subtrees.is_empty() {
+            subtrees.push((space_of(&row.pane_id), vec![row]));
+        } else if let Some((_, subtree)) = subtrees.last_mut() {
+            subtree.push(row);
+        }
+    }
+    let rank = |space: &str| match TIER_SPACES.iter().position(|tier| *tier == space) {
+        Some(position) => (0, position, String::new()),
+        None if space == UNPLACED_SPACE => (2, 0, String::new()),
+        None => (1, 0, space.to_lowercase()),
+    };
+    // Stable: subtrees keep their alphabetical order within a space.
+    subtrees.sort_by_key(|(space, _)| rank(space));
+    let mut rows = Vec::with_capacity(snapshot.agents.len());
+    let mut previous: Option<&str> = None;
+    for (space, subtree) in subtrees {
+        for (index, mut row) in subtree.into_iter().enumerate() {
+            if index == 0 && previous != Some(space) {
+                row.heading = Some(space.to_string());
+            }
+            rows.push(row);
+        }
+        previous = Some(space);
+    }
     rows
 }
 
@@ -146,9 +231,7 @@ pub(super) fn agent_tree_rows(
     if snapshot.agent_view_label.is_some() || sort != crate::config::AgentPanelSortConfig::Tree {
         return None;
     }
-    Some(tree_ordered_rows(
-        &snapshot.agents.iter().collect::<Vec<_>>(),
-    ))
+    Some(space_grouped_tree_rows(snapshot))
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -219,9 +302,20 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
+        AgentRow::line_count,
         |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
+            // The heading line is a label, not the agent: clicking it must not
+            // focus the first agent under it.
+            let heading_lines = u16::from(row.heading.is_some()).min(rect.height);
+            hits.agents.push((
+                Rect::new(
+                    rect.x,
+                    rect.y + heading_lines,
+                    rect.width,
+                    rect.height - heading_lines,
+                ),
+                row.pane_id.clone(),
+            ));
             render_agent_row(buffer, rect, row, config);
         },
     );
@@ -387,6 +481,7 @@ pub(super) fn agent_rows(
             .filter_map(|row| {
                 let mut built = agent_row(snapshot, &row.pane_id, config, machine)?;
                 built.depth = row.depth;
+                built.heading = row.heading;
                 Some(built)
             })
             .collect();
@@ -468,6 +563,7 @@ pub(super) fn agent_row(
         focused: agent.focused,
         rows,
         depth: 0,
+        heading: None,
     })
 }
 
@@ -511,6 +607,20 @@ pub(super) fn render_agent_row(
     // is indented past the edge is a row you cannot read, which is the same
     // failure as hiding it.
     let depth_indent = (row.depth * 2).min(rect.width.saturating_sub(8) as usize);
+    let mut rect = rect;
+    if let Some(heading) = row.heading.as_deref().filter(|_| rect.height > 0) {
+        put_text(
+            buffer,
+            rect.x,
+            rect.y,
+            rect.width,
+            &format!(" {heading}"),
+            Style::default()
+                .fg(palette.overlay0)
+                .add_modifier(Modifier::BOLD | Modifier::DIM),
+        );
+        rect = Rect::new(rect.x, rect.y + 1, rect.width, rect.height - 1);
+    }
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = depth_indent + if index == 0 { 1 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
@@ -727,6 +837,187 @@ mod tree_tests {
                 ("pane-l2", 2),
                 ("pane-l3", 3),
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod space_tree_tests {
+    use super::{space_grouped_tree_rows, AgentTreeRow};
+    use crate::protocol::{ClientShellAgent, ClientShellSnapshot};
+
+    fn fleet(
+        spaces: &[(&str, &str)],
+        agents: &[(&str, &str, Option<&str>)],
+    ) -> ClientShellSnapshot {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        let template = snapshot.workspaces[0].clone();
+        snapshot.workspaces = spaces
+            .iter()
+            .map(|(id, label)| {
+                let mut workspace = template.clone();
+                workspace.workspace_id = (*id).into();
+                workspace.label = (*label).into();
+                workspace
+            })
+            .collect();
+        snapshot.agents = agents
+            .iter()
+            .map(|(name, workspace, parent)| ClientShellAgent {
+                pane_id: format!("pane-{name}"),
+                workspace_id: (*workspace).into(),
+                tab_id: "tab_1".into(),
+                name: Some((*name).into()),
+                parent_agent: parent.map(str::to_string),
+                display_agent: None,
+                agent: None,
+                title: None,
+                terminal_title: None,
+                terminal_title_stripped: None,
+                agent_status: crate::api::schema::AgentStatus::Idle,
+                state_change_seq: 0,
+                state_labels: Vec::new(),
+                tokens: Vec::new(),
+                focused: false,
+            })
+            .collect();
+        snapshot
+    }
+
+    /// (heading, pane, depth): the heading is shown above the row that carries it.
+    fn shape(rows: &[AgentTreeRow]) -> Vec<(Option<&str>, &str, usize)> {
+        rows.iter()
+            .map(|row| (row.heading.as_deref(), row.pane_id.as_str(), row.depth))
+            .collect()
+    }
+
+    #[test]
+    fn agents_group_by_space_in_tier_order_with_workers_under_their_orchestrator() {
+        // The operator's example: spaces in tier order, not snapshot order, and
+        // each orchestrator's workers nested under it, alphabetical per level.
+        let snapshot = fleet(
+            &[
+                ("wW", "work"),
+                ("wM", "meta"),
+                ("wA", "assistant"),
+                ("w5068", "work/o-dev-5068"),
+                ("w4086", "work/o-4086-review"),
+            ],
+            &[
+                ("w-walk-per-ac", "w4086", Some("o-4086-review")),
+                ("m-hub-tier-rules", "wM", None),
+                ("o-dev-5068", "w5068", None),
+                ("w-bind-reuse", "w4086", Some("o-4086-review")),
+                ("o-4086-review", "w4086", None),
+                ("w-fix-redirect", "w5068", Some("o-dev-5068")),
+                ("assistant", "wA", None),
+            ],
+        );
+        assert_eq!(
+            shape(&space_grouped_tree_rows(&snapshot)),
+            vec![
+                (Some("assistant"), "pane-assistant", 0),
+                (Some("meta"), "pane-m-hub-tier-rules", 0),
+                (Some("work"), "pane-o-4086-review", 0),
+                (None, "pane-w-bind-reuse", 1),
+                (None, "pane-w-walk-per-ac", 1),
+                (None, "pane-o-dev-5068", 0),
+                (None, "pane-w-fix-redirect", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_worker_stays_under_its_parent_even_in_another_space() {
+        // Nesting is the operator's ask; a worker whose tab sits elsewhere
+        // still renders under its orchestrator rather than being split off.
+        let snapshot = fleet(
+            &[("wM", "meta"), ("wW", "work")],
+            &[("m-lane", "wM", None), ("w-task", "wW", Some("m-lane"))],
+        );
+        assert_eq!(
+            shape(&space_grouped_tree_rows(&snapshot)),
+            vec![(Some("meta"), "pane-m-lane", 0), (None, "pane-w-task", 1)]
+        );
+    }
+
+    #[test]
+    fn an_unknown_space_sorts_after_the_tiers_and_an_orphan_agent_is_kept() {
+        let snapshot = fleet(
+            &[("wZ", "scratch"), ("wI", "infra")],
+            &[
+                ("probe", "wZ", None),
+                ("i-fleet", "wI", None),
+                ("lost", "w-gone", None),
+            ],
+        );
+        let rows = space_grouped_tree_rows(&snapshot);
+        assert_eq!(rows.len(), 3, "no agent may be dropped: {rows:?}");
+        assert_eq!(
+            shape(&rows),
+            vec![
+                (Some("infra"), "pane-i-fleet", 0),
+                (Some("scratch"), "pane-probe", 0),
+                (Some("other"), "pane-lost", 0),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod space_tree_render_tests {
+    use crate::client::shell::tests::snapshot;
+    use crate::client::shell::{ClientShellConfig, ClientShellState};
+    use crate::config::{AgentPanelSortConfig, Config};
+    use crate::protocol::ClientShellAgent;
+
+    #[test]
+    fn tree_mode_draws_a_space_heading_and_keeps_it_out_of_the_click_target() {
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = AgentPanelSortConfig::Tree;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        let mut fleet = snapshot();
+        fleet.workspaces[0].label = "work/o-dev-5068".into();
+        let mut work = fleet.workspaces[0].clone();
+        work.workspace_id = "ws_work".into();
+        work.label = "work".into();
+        work.focused = false;
+        fleet.workspaces.push(work);
+        fleet.agents = vec![ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("o-dev-5068".into()),
+            parent_agent: None,
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Working,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }];
+        state.set_snapshot(Box::new(fleet));
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        let frame = state.compose(106, 40).expect("composed frame");
+        let lines = frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let (agent_hit, _) = state.hits.agents.first().cloned().expect("agent hit");
+        let heading_row = agent_hit.y as usize - 1;
+        assert!(
+            lines[heading_row].trim_start().starts_with("work"),
+            "heading line above the agent: {:?}",
+            lines[heading_row]
         );
     }
 }

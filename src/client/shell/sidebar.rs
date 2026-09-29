@@ -439,37 +439,122 @@ pub(crate) fn render_sidebar(
     );
 }
 
+/// Which sidebar group a space belongs to, and whether it heads that group.
+///
+/// Two kinds of group exist. A **worktree group** is a repository checkout
+/// with its linked worktrees under it, keyed by the repository key. A **space
+/// group** is a space labelled `<parent>` with the spaces labelled
+/// `<parent>/<child>` under it — the operator's tiered layout, where `work`
+/// holds one `work/<orchestrator>` space per orchestrator. Space-group keys are
+/// namespaced (`space:<parent>`) so a space can never share collapse state with
+/// a repository whose key happens to read the same.
+///
+/// Worktree grouping wins: a workspace already in a worktree group is never
+/// regrouped by its label. A group needs its head AND at least one child; a
+/// `work/x` whose `work` space does not exist stays a top-level row, visible,
+/// rather than hanging off a group with no head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SidebarGroup {
+    key: String,
+    head: bool,
+}
+
+const SPACE_GROUP_PREFIX: &str = "space:";
+
+fn sidebar_groups<'a>(snapshot: &'a ClientShellSnapshot) -> Vec<Option<SidebarGroup>> {
+    // A worktree group's head is its FIRST non-linked member. A second
+    // non-linked checkout of the same repository renders under it, so the
+    // group is emitted once — never a second head repeating the group.
+    let mut worktree_members = HashMap::<&str, usize>::new();
+    let mut worktree_heads = HashMap::<&str, usize>::new();
+    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        if let Some(worktree) = &workspace.worktree {
+            *worktree_members.entry(&worktree.key).or_default() += 1;
+            if !worktree.is_linked_worktree {
+                worktree_heads.entry(&worktree.key).or_insert(index);
+            }
+        }
+    }
+    let in_worktree_group =
+        |workspace: &'a ClientShellWorkspace| -> Option<&'a crate::protocol::ClientShellWorktree> {
+            workspace.worktree.as_ref().filter(|worktree| {
+                worktree_members
+                    .get(worktree.key.as_str())
+                    .copied()
+                    .unwrap_or(0)
+                    >= 2
+                    && worktree_heads.contains_key(worktree.key.as_str())
+            })
+        };
+
+    // Space heads: the FIRST space carrying a given label, so a duplicate label
+    // renders as a child of the first rather than as a second head.
+    let mut space_heads = HashMap::<&str, usize>::new();
+    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        if in_worktree_group(workspace).is_none() && !workspace.label.contains('/') {
+            space_heads.entry(workspace.label.as_str()).or_insert(index);
+        }
+    }
+    let space_parent = |workspace: &'a ClientShellWorkspace| -> Option<&'a str> {
+        let (parent, child) = workspace.label.split_once('/')?;
+        (!parent.is_empty() && !child.is_empty() && space_heads.contains_key(parent))
+            .then_some(parent)
+    };
+    let mut space_children = HashMap::<&str, usize>::new();
+    for workspace in &snapshot.workspaces {
+        if in_worktree_group(workspace).is_none() {
+            if let Some(parent) = space_parent(workspace) {
+                *space_children.entry(parent).or_default() += 1;
+            }
+        }
+    }
+
+    snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(index, workspace)| {
+            if let Some(worktree) = in_worktree_group(workspace) {
+                return Some(SidebarGroup {
+                    key: worktree.key.clone(),
+                    head: worktree_heads.get(worktree.key.as_str()) == Some(&index),
+                });
+            }
+            if let Some(parent) = space_parent(workspace) {
+                return Some(SidebarGroup {
+                    key: format!("{SPACE_GROUP_PREFIX}{parent}"),
+                    head: false,
+                });
+            }
+            (space_heads.get(workspace.label.as_str()) == Some(&index)
+                && space_children.contains_key(workspace.label.as_str()))
+            .then(|| SidebarGroup {
+                key: format!("{SPACE_GROUP_PREFIX}{}", workspace.label),
+                head: true,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn workspace_entries(
     snapshot: &ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
 ) -> Vec<WorkspaceEntry> {
+    let groups = sidebar_groups(snapshot);
     let mut members = HashMap::<&str, Vec<usize>>::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        if let Some(worktree) = &workspace.worktree {
-            members.entry(&worktree.key).or_default().push(index);
+    for (index, group) in groups.iter().enumerate() {
+        if let Some(group) = group {
+            members.entry(group.key.as_str()).or_default().push(index);
         }
     }
-    let grouped = members
-        .iter()
-        .filter(|(_, indices)| {
-            indices.len() >= 2
-                && indices.iter().any(|index| {
-                    snapshot.workspaces[*index]
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| !worktree.is_linked_worktree)
-                })
-        })
-        .map(|(key, _)| *key)
-        .collect::<HashSet<_>>();
-    let mut emitted = HashSet::<&str>::new();
+    // A group renders where its HEAD sits, so a child listed ahead of its
+    // parent is pulled under it rather than dragging the whole group up the
+    // sidebar. Every group has a head by construction (`sidebar_groups` only
+    // groups under an existing head), so skipping children here cannot drop
+    // one.
     let mut entries = Vec::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        let Some(worktree) = workspace
-            .worktree
-            .as_ref()
-            .filter(|worktree| grouped.contains(worktree.key.as_str()))
-        else {
+    for (index, group) in groups.iter().enumerate() {
+        let Some(group) = group else {
             entries.push(WorkspaceEntry {
                 index,
                 indented: false,
@@ -477,28 +562,19 @@ pub(crate) fn workspace_entries(
             });
             continue;
         };
-        if !emitted.insert(&worktree.key) {
+        if !group.head {
             continue;
         }
-        let Some(group_members) = members.get(worktree.key.as_str()) else {
+        let Some(group_members) = members.get(group.key.as_str()) else {
             continue;
         };
-        let parent = group_members
-            .iter()
-            .copied()
-            .find(|member| {
-                snapshot.workspaces[*member]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| !worktree.is_linked_worktree)
-            })
-            .unwrap_or(index);
+        let parent = index;
         entries.push(WorkspaceEntry {
             index: parent,
             indented: false,
             last_child: false,
         });
-        if collapsed_groups.contains(&worktree.key) {
+        if collapsed_groups.contains(&group.key) {
             if let Some(active) = group_members
                 .iter()
                 .copied()
@@ -528,24 +604,39 @@ pub(crate) fn workspace_entries(
     entries
 }
 
-fn parent_group_key(snapshot: &ClientShellSnapshot, index: usize) -> Option<String> {
-    let workspace = snapshot.workspaces.get(index)?;
-    let worktree = workspace.worktree.as_ref()?;
-    if worktree.is_linked_worktree {
-        return None;
-    }
-    (snapshot
-        .workspaces
+/// The collapse key of the group this space HEADS, if it heads one.
+pub(in crate::client::shell) fn parent_group_key(
+    snapshot: &ClientShellSnapshot,
+    index: usize,
+) -> Option<String> {
+    sidebar_groups(snapshot)
+        .into_iter()
+        .nth(index)
+        .flatten()
+        .filter(|group| group.head)
+        .map(|group| group.key)
+}
+
+/// Every space in the group this space heads, head included.
+pub(in crate::client::shell) fn group_members(
+    snapshot: &ClientShellSnapshot,
+    index: usize,
+) -> Vec<usize> {
+    let groups = sidebar_groups(snapshot);
+    let Some(key) = groups
+        .get(index)
+        .and_then(Option::as_ref)
+        .filter(|group| group.head)
+        .map(|group| group.key.clone())
+    else {
+        return vec![index];
+    };
+    groups
         .iter()
-        .filter(|candidate| {
-            candidate
-                .worktree
-                .as_ref()
-                .is_some_and(|candidate| candidate.key == worktree.key)
-        })
-        .count()
-        >= 2)
-        .then(|| worktree.key.clone())
+        .enumerate()
+        .filter(|(_, group)| group.as_ref().is_some_and(|group| group.key == key))
+        .map(|(member, _)| member)
+        .collect()
 }
 
 pub(in crate::client::shell) fn render_parent_group_toggle(
@@ -583,26 +674,22 @@ pub(in crate::client::shell) fn displayed_workspace_status(
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
 ) -> crate::api::schema::AgentStatus {
-    let Some(worktree) = workspace
-        .worktree
-        .as_ref()
-        .filter(|worktree| !worktree.is_linked_worktree)
+    let Some(index) = snapshot
+        .workspaces
+        .iter()
+        .position(|candidate| candidate.workspace_id == workspace.workspace_id)
     else {
         return workspace.agent_status;
     };
-    if !collapsed_groups.contains(&worktree.key) {
+    let Some(key) = parent_group_key(snapshot, index) else {
+        return workspace.agent_status;
+    };
+    if !collapsed_groups.contains(&key) {
         return workspace.agent_status;
     }
-    snapshot
-        .workspaces
-        .iter()
-        .filter(|candidate| {
-            candidate
-                .worktree
-                .as_ref()
-                .is_some_and(|candidate| candidate.key == worktree.key)
-        })
-        .map(|candidate| candidate.agent_status)
+    group_members(snapshot, index)
+        .into_iter()
+        .map(|member| snapshot.workspaces[member].agent_status)
         .max_by_key(|status| status_priority(*status))
         .unwrap_or(workspace.agent_status)
 }
@@ -731,5 +818,192 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 buffer[(x, y)].set_bg(background);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod space_group_tests {
+    use super::{displayed_workspace_status, parent_group_key, workspace_entries};
+    use crate::api::schema::AgentStatus;
+    use crate::protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientShellWorktree};
+    use std::collections::HashSet;
+
+    fn space(id: &str, label: &str) -> ClientShellWorkspace {
+        let mut workspace = crate::client::shell::tests::snapshot().workspaces[0].clone();
+        workspace.workspace_id = id.into();
+        workspace.label = label.into();
+        workspace.custom_label = true;
+        workspace.focused = false;
+        workspace.worktree = None;
+        workspace
+    }
+
+    fn fleet(spaces: Vec<ClientShellWorkspace>) -> ClientShellSnapshot {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.workspaces = spaces;
+        snapshot
+    }
+
+    /// (label, indented) in render order: what the operator sees.
+    fn shape(snapshot: &ClientShellSnapshot, collapsed: &HashSet<String>) -> Vec<(String, bool)> {
+        workspace_entries(snapshot, collapsed)
+            .into_iter()
+            .map(|entry| {
+                (
+                    snapshot.workspaces[entry.index].label.clone(),
+                    entry.indented,
+                )
+            })
+            .collect()
+    }
+
+    fn row(label: &str, indented: bool) -> (String, bool) {
+        (label.into(), indented)
+    }
+
+    #[test]
+    fn a_slash_label_nests_under_the_space_it_names() {
+        // Deliberately out of order: a child listed before its parent must still
+        // render under it, and an unrelated space between them must not split
+        // the group.
+        let snapshot = fleet(vec![
+            space("w1", "work/o-b"),
+            space("w2", "assistant"),
+            space("w3", "work"),
+            space("w4", "work/o-a"),
+            space("w5", "meta"),
+        ]);
+        assert_eq!(
+            shape(&snapshot, &HashSet::new()),
+            vec![
+                row("assistant", false),
+                row("work", false),
+                row("work/o-b", true),
+                row("work/o-a", true),
+                row("meta", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_slash_label_with_no_parent_space_is_a_top_level_row() {
+        // The parent space is missing (not yet created, or closed). The child
+        // must stay visible rather than vanish into a group with no head.
+        let snapshot = fleet(vec![space("w1", "meta"), space("w2", "work/o-a")]);
+        assert_eq!(
+            shape(&snapshot, &HashSet::new()),
+            vec![row("meta", false), row("work/o-a", false)]
+        );
+    }
+
+    #[test]
+    fn a_parent_space_with_no_children_has_no_toggle() {
+        let snapshot = fleet(vec![space("w1", "work"), space("w2", "meta")]);
+        assert_eq!(parent_group_key(&snapshot, 0), None);
+    }
+
+    #[test]
+    fn collapsing_the_parent_space_hides_its_children_but_keeps_the_focused_one() {
+        let mut snapshot = fleet(vec![
+            space("w1", "work"),
+            space("w2", "work/o-a"),
+            space("w3", "work/o-b"),
+        ]);
+        snapshot.workspaces[2].focused = true;
+        let key = parent_group_key(&snapshot, 0).expect("work heads a group");
+        let collapsed = HashSet::from([key]);
+        assert_eq!(
+            shape(&snapshot, &collapsed),
+            vec![row("work", false), row("work/o-b", true)]
+        );
+    }
+
+    #[test]
+    fn a_collapsed_parent_space_reports_its_most_urgent_child() {
+        let mut snapshot = fleet(vec![space("w1", "work"), space("w2", "work/o-a")]);
+        snapshot.workspaces[0].agent_status = AgentStatus::Idle;
+        snapshot.workspaces[1].agent_status = AgentStatus::Blocked;
+        let key = parent_group_key(&snapshot, 0).expect("work heads a group");
+        let collapsed = HashSet::from([key]);
+        assert_eq!(
+            displayed_workspace_status(&snapshot, &snapshot.workspaces[0], &collapsed),
+            AgentStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn a_space_group_key_cannot_collide_with_a_worktree_group_key() {
+        // Worktree group keys are repository paths; a space literally labelled
+        // with one must not share its collapse state.
+        let snapshot = fleet(vec![space("w1", "work"), space("w2", "work/o-a")]);
+        let key = parent_group_key(&snapshot, 0).expect("work heads a group");
+        assert_ne!(key, "work");
+        assert!(!key.starts_with('/'));
+    }
+
+    #[test]
+    fn worktree_grouping_still_wins_for_a_workspace_in_a_worktree_group() {
+        let mut repo = space("w1", "repo");
+        repo.worktree = Some(ClientShellWorktree {
+            key: "/repo".into(),
+            label: "repo".into(),
+            is_linked_worktree: false,
+        });
+        let mut linked = space("w2", "repo/feature");
+        linked.worktree = Some(ClientShellWorktree {
+            key: "/repo".into(),
+            label: "repo".into(),
+            is_linked_worktree: true,
+        });
+        let snapshot = fleet(vec![repo, linked]);
+        assert_eq!(
+            shape(&snapshot, &HashSet::new()),
+            vec![row("repo", false), row("repo/feature", true)]
+        );
+        assert_eq!(parent_group_key(&snapshot, 0).as_deref(), Some("/repo"));
+    }
+
+    #[test]
+    fn two_checkouts_of_one_repo_share_one_head_and_no_row_repeats() {
+        // Two NON-linked workspaces on the same repository key: the first is
+        // the head, the second renders under it — never a second head that
+        // re-emits the whole group.
+        let checkout = |id: &str, label: &str, linked: bool| {
+            let mut workspace = space(id, label);
+            workspace.worktree = Some(ClientShellWorktree {
+                key: "/repo".into(),
+                label: "repo".into(),
+                is_linked_worktree: linked,
+            });
+            workspace
+        };
+        let snapshot = fleet(vec![
+            checkout("w1", "repo", false),
+            checkout("w2", "repo-again", false),
+            checkout("w3", "repo/feature", true),
+        ]);
+        assert_eq!(
+            shape(&snapshot, &HashSet::new()),
+            vec![
+                row("repo", false),
+                row("repo-again", true),
+                row("repo/feature", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_space_appears_exactly_once() {
+        let snapshot = fleet(vec![
+            space("w1", "work/o-a"),
+            space("w2", "work"),
+            space("w3", "work/o-a"),
+            space("w4", "infra"),
+            space("w5", "work/"),
+        ]);
+        let entries = workspace_entries(&snapshot, &HashSet::new());
+        let mut indices = entries.iter().map(|entry| entry.index).collect::<Vec<_>>();
+        indices.sort();
+        assert_eq!(indices, vec![0, 1, 2, 3, 4]);
     }
 }
