@@ -375,6 +375,19 @@ fn agent_command() -> Command {
                         .required(true),
                 ),
         )
+        .subcommand(
+            Command::new("set-parent")
+                .about("Record which agent spawned a live agent")
+                .override_usage(format!("{} agent set-parent <TARGET> <PARENT>|--clear", crate::build_info::COMMAND_NAME))
+                .arg(required("target", "TARGET"))
+                .arg(Arg::new("parent").value_name("PARENT"))
+                .arg(flag("clear"))
+                .group(
+                    ArgGroup::new("set-parent")
+                        .args(["parent", "clear"])
+                        .required(true),
+                ),
+        )
         .subcommand(id_command("focus", "target", "Focus an agent"))
         .subcommand(
             Command::new("wait")

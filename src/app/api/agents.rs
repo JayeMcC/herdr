@@ -3,8 +3,8 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use crate::api::schema::{
-    AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
-    PaneReadResult, ResponseResult,
+    AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentSetParentParams,
+    AgentStartParams, AgentTarget, PaneReadResult, ResponseResult,
 };
 use crate::app::App;
 
@@ -65,6 +65,19 @@ impl App {
         let agent = match self.rename_agent_target(&params.target, params.name) {
             Ok(agent) => agent,
             Err(err) => return encode_error_body(id, self.agent_rename_error_body(err)),
+        };
+
+        encode_success(id, ResponseResult::AgentInfo { agent })
+    }
+
+    pub(super) fn handle_agent_set_parent(
+        &mut self,
+        id: String,
+        params: AgentSetParentParams,
+    ) -> String {
+        let agent = match self.set_agent_parent(&params.target, params.parent) {
+            Ok(agent) => agent,
+            Err(err) => return encode_error_body(id, self.agent_set_parent_error_body(err)),
         };
 
         encode_success(id, ResponseResult::AgentInfo { agent })
@@ -602,6 +615,106 @@ mod tests {
             child.parent_agent.as_deref(),
             Some("conductor"),
             "the child must follow its parent's new name"
+        );
+    }
+
+    /// Two named agents in separate workspaces: "orchestrator" and "worker".
+    fn app_with_two_agents() -> (App, crate::terminal::TerminalId) {
+        let mut app = app_with_agent();
+        app.state.workspaces.push(Workspace::test_new("child"));
+        app.state.ensure_test_terminals();
+        name_root_agent(&mut app, "orchestrator");
+        let child_pane = app.state.workspaces[1].tabs[0].root_pane;
+        let child_terminal_id = app.state.workspaces[1].tabs[0].panes[&child_pane]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&child_terminal_id).unwrap();
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        terminal.set_agent_name("worker".into());
+        (app, child_terminal_id)
+    }
+
+    fn set_parent_call(app: &mut App, target: &str, parent: Option<&str>) -> serde_json::Value {
+        let response = app.handle_agent_set_parent(
+            "req".into(),
+            AgentSetParentParams {
+                target: target.into(),
+                parent: parent.map(str::to_string),
+            },
+        );
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn set_parent_records_a_parent_on_a_live_agent() {
+        // A live agent started without --parent can be nested afterwards —
+        // without restarting it, which is the only reason this method exists.
+        let (mut app, child) = app_with_two_agents();
+        let raw = set_parent_call(&mut app, "worker", Some("orchestrator"));
+        assert_eq!(
+            raw["result"]["agent"]["parent_agent"], "orchestrator",
+            "{raw}"
+        );
+        assert_eq!(
+            app.state.terminals[&child].parent_agent.as_deref(),
+            Some("orchestrator")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_parent_with_no_parent_clears_it() {
+        let (mut app, child) = app_with_two_agents();
+        set_parent_call(&mut app, "worker", Some("orchestrator"));
+        let raw = set_parent_call(&mut app, "worker", None);
+        assert!(
+            raw["result"]["agent"].get("parent_agent").is_none(),
+            "{raw}"
+        );
+        assert_eq!(app.state.terminals[&child].parent_agent, None);
+    }
+
+    #[tokio::test]
+    async fn set_parent_refuses_an_unknown_parent_and_changes_nothing() {
+        // Same rule as agent start: a dangling name would strand the subtree.
+        let (mut app, child) = app_with_two_agents();
+        let raw = set_parent_call(&mut app, "worker", Some("ghost"));
+        assert_eq!(raw["error"]["code"], "agent_parent_not_found", "{raw}");
+        assert_eq!(app.state.terminals[&child].parent_agent, None);
+    }
+
+    #[tokio::test]
+    async fn set_parent_refuses_self_and_a_cycle() {
+        let (mut app, _) = app_with_two_agents();
+        let raw = set_parent_call(&mut app, "worker", Some("worker"));
+        assert_eq!(raw["error"]["code"], "invalid_agent_parent", "{raw}");
+
+        set_parent_call(&mut app, "worker", Some("orchestrator"));
+        // orchestrator -> worker would close the loop worker -> orchestrator.
+        let raw = set_parent_call(&mut app, "orchestrator", Some("worker"));
+        assert_eq!(raw["error"]["code"], "invalid_agent_parent", "{raw}");
+    }
+
+    #[tokio::test]
+    async fn set_parent_on_an_unknown_target_is_agent_not_found() {
+        let (mut app, _) = app_with_two_agents();
+        let raw = set_parent_call(&mut app, "nobody", Some("orchestrator"));
+        assert!(raw.get("error").is_some(), "{raw}");
+    }
+
+    #[test]
+    fn set_parent_wire_method_name_is_agent_set_parent() {
+        let request = crate::api::schema::Request {
+            id: "x".into(),
+            method: crate::api::schema::Method::AgentSetParent(AgentSetParentParams {
+                target: "worker".into(),
+                parent: None,
+            }),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["method"], "agent.set_parent");
+        assert!(
+            json["params"].get("parent").is_none(),
+            "absent parent is omitted: {json}"
         );
     }
 

@@ -2,8 +2,9 @@ use std::time::{Duration, Instant};
 
 use crate::api::schema::{
     AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, ErrorBody,
-    ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentSendKeysParams, AgentSetParentParams, AgentStartParams, AgentTarget, AgentWaitParams,
+    EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat,
+    ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -22,6 +23,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "send-keys" => agent_send_keys(&args[1..]),
         "prompt" => agent_prompt(&args[1..]),
         "rename" => agent_rename(&args[1..]),
+        "set-parent" => agent_set_parent(&args[1..]),
         "focus" => agent_focus(&args[1..]),
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
@@ -835,6 +837,26 @@ fn agent_rename(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+fn agent_set_parent(args: &[String]) -> std::io::Result<i32> {
+    let [target, value] = args else {
+        eprintln!("usage: herdr agent set-parent <target> <parent>|--clear");
+        return Ok(2);
+    };
+    let parent = if value == "--clear" {
+        None
+    } else {
+        Some(value.clone())
+    };
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:set-parent".into(),
+        method: Method::AgentSetParent(AgentSetParentParams {
+            target: target.clone(),
+            parent,
+        }),
+    })?)
+}
+
 fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!(
@@ -998,6 +1020,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent send-keys <target> <key> [key ...]");
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent rename <target> <name>|--clear");
+    eprintln!("  herdr agent set-parent <target> <parent>|--clear");
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");

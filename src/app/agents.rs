@@ -368,6 +368,94 @@ impl App {
         }
     }
 
+    /// Record, or clear, the parent of a live agent. The same rules as
+    /// `agent start --parent`: the parent must be a live named agent, and the
+    /// edge may not point at itself. It also may not close a cycle — a cycle
+    /// is not renderable as a tree, and while the panel survives one, a record
+    /// the operator reads as "who spawned whom" should not be able to hold one.
+    pub(super) fn set_agent_parent(
+        &mut self,
+        target: &str,
+        parent: Option<String>,
+    ) -> Result<crate::api::schema::AgentInfo, AgentSetParentError> {
+        let resolved = self
+            .resolve_agent_target(target)
+            .map_err(AgentSetParentError::Target)?;
+        let Some(name) = self
+            .state
+            .terminals
+            .values()
+            .find(|terminal| terminal.id.to_string() == resolved.terminal_id)
+            .filter(|terminal| terminal.effective_agent_label().is_some())
+            .map(|terminal| terminal.agent_name.clone())
+        else {
+            return Err(AgentSetParentError::NotAgent);
+        };
+        if let Some(parent) = parent.as_deref() {
+            if name.as_deref() == Some(parent) {
+                return Err(AgentSetParentError::InvalidParent(parent.to_string()));
+            }
+            if self.resolve_agent_target(parent).is_err() {
+                return Err(AgentSetParentError::ParentNotFound(parent.to_string()));
+            }
+            // Walk up from the proposed parent. Reaching this agent means the
+            // new edge would close a loop. Bounded by the terminal count, so a
+            // cycle already present in restored state cannot hang the walk.
+            if let Some(name) = name.as_deref() {
+                let parent_of = |agent: &str| {
+                    self.state
+                        .terminals
+                        .values()
+                        .find(|terminal| terminal.agent_name.as_deref() == Some(agent))
+                        .and_then(|terminal| terminal.parent_agent.clone())
+                };
+                let mut cursor = Some(parent.to_string());
+                for _ in 0..=self.state.terminals.len() {
+                    let Some(current) = cursor else { break };
+                    if current == name {
+                        return Err(AgentSetParentError::InvalidParent(parent.to_string()));
+                    }
+                    cursor = parent_of(&current);
+                }
+            }
+        }
+        let Some(terminal) = self
+            .state
+            .terminals
+            .values_mut()
+            .find(|terminal| terminal.id.to_string() == resolved.terminal_id)
+        else {
+            return Err(AgentSetParentError::NotAgent);
+        };
+        terminal.parent_agent = parent;
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+        self.emit_pane_updated(resolved.ws_idx, resolved.pane_id);
+        self.agent_info(resolved.ws_idx, resolved.pane_id)
+            .ok_or(AgentSetParentError::NotAgent)
+    }
+
+    pub(super) fn agent_set_parent_error_body(
+        &self,
+        err: AgentSetParentError,
+    ) -> crate::api::schema::ErrorBody {
+        match err {
+            AgentSetParentError::Target(err) => self.agent_target_error_body(err),
+            AgentSetParentError::NotAgent => crate::api::schema::ErrorBody {
+                code: "agent_not_found".into(),
+                message: "agent target does not currently host an agent".into(),
+            },
+            AgentSetParentError::ParentNotFound(parent) => crate::api::schema::ErrorBody {
+                code: "agent_parent_not_found".into(),
+                message: format!("parent agent {parent} does not exist"),
+            },
+            AgentSetParentError::InvalidParent(parent) => crate::api::schema::ErrorBody {
+                code: "invalid_agent_parent".into(),
+                message: format!("agent {parent} cannot be a parent here: it would make a cycle"),
+            },
+        }
+    }
+
     pub(super) fn agent_rename_error_body(
         &self,
         err: AgentRenameError,
@@ -506,6 +594,13 @@ pub(super) enum AgentStartError {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,
     },
+}
+
+pub(super) enum AgentSetParentError {
+    Target(TerminalTargetError),
+    NotAgent,
+    ParentNotFound(String),
+    InvalidParent(String),
 }
 
 pub(super) enum AgentRenameError {
