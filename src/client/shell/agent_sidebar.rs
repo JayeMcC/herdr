@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     buffer::Buffer,
@@ -20,6 +20,16 @@ pub(super) struct AgentRow {
     pub(super) depth: usize,
     /// Space heading drawn on its own line above this row (tree mode only).
     pub(super) heading: Option<String>,
+    /// Tree mode, a row with children: its collapse key, whether it is
+    /// collapsed, and how many rows the collapse hides.
+    pub(super) toggle: Option<AgentRowToggle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AgentRowToggle {
+    pub(super) key: String,
+    pub(super) collapsed: bool,
+    pub(super) hidden: usize,
 }
 
 impl AgentRow {
@@ -223,6 +233,62 @@ pub(super) fn space_grouped_tree_rows(snapshot: &ClientShellSnapshot) -> Vec<Age
     rows
 }
 
+/// Collapse key for an agent's subtree. Namespaced so it can share the
+/// persisted collapse set with the spaces panel without colliding with a
+/// space-group (`space:`) or worktree (repository path) key. Held by the
+/// agent's NAME, like `parent_agent`, because pane and terminal ids do not
+/// survive a restart and a collapse should.
+pub(super) const AGENT_COLLAPSE_PREFIX: &str = "agent:";
+
+pub(super) fn agent_collapse_key(name: &str) -> String {
+    format!("{AGENT_COLLAPSE_PREFIX}{name}")
+}
+
+/// Hide the descendants of every collapsed agent. Returns the visible rows and,
+/// for each collapsed agent that actually hid something, how many rows it hid
+/// (keyed by pane id), so its row can say so. Rows are in tree order, so a
+/// subtree is the run of deeper rows that follows its root. A space heading
+/// never disappears: one on a hidden row moves to the next visible row.
+pub(super) fn collapse_tree_rows(
+    rows: Vec<AgentTreeRow>,
+    collapsed: &HashSet<String>,
+    name_of: impl Fn(&str) -> Option<String>,
+) -> (Vec<AgentTreeRow>, HashMap<String, usize>) {
+    let mut out: Vec<AgentTreeRow> = Vec::with_capacity(rows.len());
+    let mut hidden = HashMap::<String, usize>::new();
+    let mut hiding: Option<(String, usize)> = None;
+    let mut pending_heading: Option<String> = None;
+    for mut row in rows {
+        if let Some((root, depth)) = hiding.as_ref() {
+            if row.depth > *depth {
+                *hidden.entry(root.clone()).or_default() += 1;
+                if let Some(heading) = row.heading.take() {
+                    pending_heading.get_or_insert(heading);
+                }
+                continue;
+            }
+            hiding = None;
+        }
+        if let Some(heading) = pending_heading.take() {
+            row.heading.get_or_insert(heading);
+        }
+        if name_of(&row.pane_id).is_some_and(|name| collapsed.contains(&agent_collapse_key(&name)))
+        {
+            hiding = Some((row.pane_id.clone(), row.depth));
+        }
+        out.push(row);
+    }
+    (out, hidden)
+}
+
+fn agent_name(snapshot: &ClientShellSnapshot, pane_id: &str) -> Option<String> {
+    snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == pane_id)
+        .and_then(|agent| agent.name.clone())
+}
+
 /// Tree rows for the panel, or `None` when the active sort is not the tree.
 pub(super) fn agent_tree_rows(
     snapshot: &ClientShellSnapshot,
@@ -237,6 +303,16 @@ pub(super) fn agent_tree_rows(
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
+) -> Vec<String> {
+    visible_agent_pane_ids(snapshot, sort, &HashSet::new())
+}
+
+/// The agents in panel order, minus those inside a collapsed subtree, so
+/// keyboard navigation moves through exactly the rows the panel shows.
+pub(super) fn visible_agent_pane_ids(
+    snapshot: &ClientShellSnapshot,
+    sort: crate::config::AgentPanelSortConfig,
+    collapsed: &HashSet<String>,
 ) -> Vec<String> {
     if snapshot.agent_view_label.is_some() {
         return snapshot
@@ -255,6 +331,7 @@ pub(super) fn ordered_agent_pane_ids(
         // Navigation reads the same order it renders: if the panel shows a
         // child under its parent, ctrl-n must move there and not to whatever
         // the unsorted snapshot happened to list next.
+        let (rows, _) = collapse_tree_rows(rows, collapsed, |pane| agent_name(snapshot, pane));
         return rows.into_iter().map(|row| row.pane_id).collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
@@ -277,6 +354,7 @@ pub(super) fn render_agent_panel(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    collapsed: &HashSet<String>,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -290,7 +368,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let mut rows = agent_rows(snapshot, config, None);
+    let mut rows = collapsible_agent_rows(snapshot, config, None, collapsed);
     for row in &mut rows {
         row.keep_full_tab_label(area.width);
     }
@@ -310,16 +388,39 @@ pub(super) fn render_agent_panel(
             // The heading line is a label, not the agent: clicking it must not
             // focus the first agent under it.
             let heading_lines = u16::from(row.heading.is_some()).min(rect.height);
-            hits.agents.push((
-                Rect::new(
-                    rect.x,
-                    rect.y + heading_lines,
-                    rect.width,
-                    rect.height - heading_lines,
-                ),
-                row.pane_id.clone(),
-            ));
+            let body = Rect::new(
+                rect.x,
+                rect.y + heading_lines,
+                rect.width,
+                rect.height - heading_lines,
+            );
             render_agent_row(buffer, rect, row, config);
+            // The toggle sits on the agent's first line, at the right edge,
+            // where the spaces panel puts its group toggle. It is registered
+            // BEFORE the row so a click on it collapses instead of focusing.
+            if let Some(toggle) = row
+                .toggle
+                .as_ref()
+                .filter(|_| body.height > 0 && body.width > 0)
+            {
+                let glyph = if toggle.collapsed {
+                    format!("▸{}", toggle.hidden)
+                } else {
+                    "▾".to_string()
+                };
+                let width = (display_width(&glyph) as u16).min(body.width);
+                let toggle_rect = Rect::new(body.right().saturating_sub(width), body.y, width, 1);
+                put_text(
+                    buffer,
+                    toggle_rect.x,
+                    toggle_rect.y,
+                    toggle_rect.width,
+                    &glyph,
+                    Style::default().fg(config.palette.accent),
+                );
+                hits.agent_toggles.push((toggle_rect, toggle.key.clone()));
+            }
+            hits.agents.push((body, row.pane_id.clone()));
         },
     );
 }
@@ -473,18 +574,37 @@ pub(super) fn render_agent_list<T>(
     }
 }
 
-pub(super) fn agent_rows(
+/// The panel's rows, with the tree's collapsed subtrees hidden. Only tree mode
+/// has subtrees; every other mode ignores `collapsed`.
+pub(super) fn collapsible_agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     machine: Option<&str>,
+    collapsed: &HashSet<String>,
 ) -> Vec<AgentRow> {
     if let Some(tree) = agent_tree_rows(snapshot, config.agent_panel_sort) {
+        let has_children = tree
+            .windows(2)
+            .filter(|pair| pair[1].depth > pair[0].depth)
+            .map(|pair| pair[0].pane_id.clone())
+            .collect::<HashSet<_>>();
+        let (tree, hidden) = collapse_tree_rows(tree, collapsed, |pane| agent_name(snapshot, pane));
         return tree
             .into_iter()
             .filter_map(|row| {
                 let mut built = agent_row(snapshot, &row.pane_id, config, machine)?;
                 built.depth = row.depth;
                 built.heading = row.heading;
+                if has_children.contains(&row.pane_id) {
+                    if let Some(name) = agent_name(snapshot, &row.pane_id) {
+                        let key = agent_collapse_key(&name);
+                        built.toggle = Some(AgentRowToggle {
+                            collapsed: collapsed.contains(&key),
+                            hidden: hidden.get(&row.pane_id).copied().unwrap_or(0),
+                            key,
+                        });
+                    }
+                }
                 Some(built)
             })
             .collect();
@@ -567,6 +687,7 @@ pub(super) fn agent_row(
         rows,
         depth: 0,
         heading: None,
+        toggle: None,
     })
 }
 
@@ -1297,5 +1418,188 @@ mod full_tab_label_render_tests {
             !sidebar.contains('…'),
             "no part of the label may be ellipsised:\n{sidebar}"
         );
+    }
+}
+
+#[cfg(test)]
+mod collapse_tests {
+    use super::{collapse_tree_rows, AgentTreeRow};
+    use std::collections::HashSet;
+
+    fn row(pane: &str, depth: usize, heading: Option<&str>) -> AgentTreeRow {
+        AgentTreeRow {
+            pane_id: pane.into(),
+            depth,
+            heading: heading.map(str::to_string),
+        }
+    }
+
+    fn fleet() -> Vec<AgentTreeRow> {
+        vec![
+            row("meta-lane", 0, Some("meta")),
+            row("o-a", 0, Some("work")),
+            row("w-a1", 1, None),
+            row("w-a1-sub", 2, None),
+            row("w-a2", 1, None),
+            row("o-b", 0, None),
+            row("w-b1", 1, None),
+        ]
+    }
+
+    fn name_of(pane: &str) -> Option<String> {
+        Some(pane.to_string())
+    }
+
+    #[test]
+    fn nothing_collapsed_changes_nothing() {
+        let (rows, hidden) = collapse_tree_rows(fleet(), &HashSet::new(), name_of);
+        assert_eq!(rows, fleet());
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn collapsing_an_orchestrator_hides_its_whole_subtree_only() {
+        let collapsed = HashSet::from(["agent:o-a".to_string()]);
+        let (rows, hidden) = collapse_tree_rows(fleet(), &collapsed, name_of);
+        let panes = rows
+            .iter()
+            .map(|row| row.pane_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(panes, vec!["meta-lane", "o-a", "o-b", "w-b1"]);
+        assert_eq!(
+            hidden.get("o-a"),
+            Some(&3),
+            "counts every hidden descendant"
+        );
+    }
+
+    #[test]
+    fn a_heading_on_a_hidden_row_moves_to_the_next_visible_row() {
+        // Collapsing never removes a space heading: if the first row of a space
+        // were hidden, its heading must survive on the next row that renders.
+        let rows = vec![row("o-a", 0, Some("work")), row("w-a1", 1, None)];
+        let collapsed = HashSet::from(["agent:o-a".to_string()]);
+        let (out, _) = collapse_tree_rows(rows, &collapsed, name_of);
+        assert_eq!(out[0].heading.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn a_leaf_named_in_the_collapsed_set_is_unaffected() {
+        let collapsed = HashSet::from(["agent:w-b1".to_string()]);
+        let (rows, hidden) = collapse_tree_rows(fleet(), &collapsed, name_of);
+        assert_eq!(rows, fleet());
+        assert!(hidden.is_empty(), "a leaf has nothing to hide: {hidden:?}");
+    }
+}
+
+#[cfg(test)]
+mod collapse_click_tests {
+    use crate::client::shell::tests::{snapshot, surface};
+    use crate::client::shell::{ClientShellConfig, ClientShellState};
+    use crate::config::{AgentPanelSortConfig, Config};
+    use crate::protocol::ClientShellAgent;
+    use crate::raw_input::RawInputEvent;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    fn agent(name: &str, pane: &str, parent: Option<&str>) -> ClientShellAgent {
+        ClientShellAgent {
+            pane_id: pane.into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some(name.into()),
+            parent_agent: parent.map(str::to_string),
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Idle,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }
+    }
+
+    fn click(state: &mut ClientShellState, column: u16, row: u16) {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::empty(),
+            })]);
+        }
+    }
+
+    #[test]
+    fn clicking_an_orchestrators_toggle_collapses_and_expands_its_workers() {
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = AgentPanelSortConfig::Tree;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        let mut fleet = snapshot();
+        fleet.workspaces[0].label = "work".into();
+        fleet.agents = vec![
+            agent("o-lead", "pane_1", None),
+            agent("w-one", "pane_2", Some("o-lead")),
+            agent("w-two", "pane_3", Some("o-lead")),
+        ];
+        state.set_snapshot(Box::new(fleet));
+        state.set_pane_surface(surface());
+
+        state.compose(106, 40).expect("frame");
+        assert_eq!(state.hits.agents.len(), 3, "expanded: all three rows");
+        let (toggle, key) = state
+            .hits
+            .agent_toggles
+            .first()
+            .cloned()
+            .expect("parent has a toggle");
+        assert_eq!(key, "agent:o-lead");
+        assert_eq!(
+            state.hits.agent_toggles.len(),
+            1,
+            "only a row with children gets one"
+        );
+
+        click(&mut state, toggle.x, toggle.y);
+        state.compose(106, 40).expect("frame");
+        let panes = state
+            .hits
+            .agents
+            .iter()
+            .map(|(_, pane)| pane.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(panes, vec!["pane_1"], "collapsed: the workers are hidden");
+        assert!(state.collapsed_groups.contains("agent:o-lead"));
+
+        let (toggle, _) = state
+            .hits
+            .agent_toggles
+            .first()
+            .cloned()
+            .expect("toggle still there");
+        click(&mut state, toggle.x, toggle.y);
+        state.compose(106, 40).expect("frame");
+        assert_eq!(state.hits.agents.len(), 3, "expanded again");
+    }
+
+    #[test]
+    fn next_agent_skips_rows_inside_a_collapsed_subtree() {
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = AgentPanelSortConfig::Tree;
+        let mut fleet = snapshot();
+        fleet.agents = vec![
+            agent("a-lead", "pane_1", None),
+            agent("a-worker", "pane_2", Some("a-lead")),
+            agent("b-solo", "pane_3", None),
+        ];
+        let collapsed = std::collections::HashSet::from(["agent:a-lead".to_string()]);
+        let order = super::visible_agent_pane_ids(&fleet, AgentPanelSortConfig::Tree, &collapsed);
+        assert_eq!(order, vec!["pane_1", "pane_3"]);
+        let _ = config;
     }
 }
