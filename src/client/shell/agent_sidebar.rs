@@ -290,7 +290,10 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let mut rows = agent_rows(snapshot, config, None);
+    for row in &mut rows {
+        row.keep_full_tab_label(area.width);
+    }
     render_agent_list(
         buffer,
         area,
@@ -565,6 +568,125 @@ pub(super) fn agent_row(
         depth: 0,
         heading: None,
     })
+}
+
+/// Keep a tab label whole (operator 2026-09-29: a tab using a stack is labelled
+/// `<lane> · <stack>`, and the panel must show all of it).
+///
+/// The shared token fitter shrinks or drops a label that does not fit, which on
+/// a 26-column sidebar cuts the stack name off — the one part the operator
+/// asked to see. So when a row's tab label is wider than the row allows, the
+/// label leaves that row and is wrapped onto lines of its own, breaking at
+/// ` · ` first so the stack reads as one unit, and mid-word only when a single
+/// part is wider than a whole line. The rest of the row is left exactly as it
+/// was, and a label that fits is not touched.
+pub(super) fn fit_full_tab_label(
+    rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    width: usize,
+) -> Vec<Vec<crate::ui::ResolvedToken>> {
+    use crate::ui::{ResolvedToken, ResolvedTokenKind};
+    let width = width.max(1);
+    let fits = |row: &[ResolvedToken], width: usize| {
+        let mut total = 0;
+        for (index, token) in row.iter().enumerate() {
+            if index > 0 {
+                total += display_width(crate::ui::token_separator(&row[index - 1], token));
+            }
+            total += match &token.kind {
+                ResolvedTokenKind::StateIcon => 1,
+                ResolvedTokenKind::StateText(text)
+                | ResolvedTokenKind::Machine(text)
+                | ResolvedTokenKind::Workspace(text)
+                | ResolvedTokenKind::Tab(text)
+                | ResolvedTokenKind::Pane(text)
+                | ResolvedTokenKind::Agent(text)
+                | ResolvedTokenKind::TerminalTitle(text)
+                | ResolvedTokenKind::Branch(text)
+                | ResolvedTokenKind::Custom(text) => display_width(text),
+                ResolvedTokenKind::GitStatus { .. } => 0,
+            };
+        }
+        total <= width
+    };
+    // Only the first line of a row gets `width`; every later line is indented
+    // two more columns by `render_agent_row`.
+    let continuation = width.saturating_sub(2).max(1);
+    let mut out: Vec<Vec<ResolvedToken>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let line_width = if out.is_empty() { width } else { continuation };
+        let Some(tab_index) = row
+            .iter()
+            .position(|token| matches!(token.kind, ResolvedTokenKind::Tab(_)))
+        else {
+            out.push(row);
+            continue;
+        };
+        if fits(&row, line_width) {
+            out.push(row);
+            continue;
+        }
+        let mut row = row;
+        let tab = row.remove(tab_index);
+        let ResolvedTokenKind::Tab(label) = &tab.kind else {
+            out.push(row);
+            continue;
+        };
+        if !row.is_empty() {
+            out.push(row);
+        }
+        for line in wrap_label(label, continuation) {
+            out.push(vec![ResolvedToken::new(
+                ResolvedTokenKind::Tab(line),
+                tab.style,
+            )]);
+        }
+    }
+    out
+}
+
+impl AgentRow {
+    /// Apply `fit_full_tab_label` at the width this row's FIRST line renders
+    /// in: the panel width less the first-line indent (`depth_indent + 1`,
+    /// the arithmetic `render_agent_row` uses). Continuation lines indent two
+    /// more columns, so they get that much less.
+    pub(super) fn keep_full_tab_label(&mut self, panel_width: u16) {
+        let depth_indent = (self.depth * 2).min(panel_width.saturating_sub(8) as usize);
+        let width = (panel_width as usize).saturating_sub(depth_indent + 1);
+        self.rows = fit_full_tab_label(std::mem::take(&mut self.rows), width);
+    }
+}
+
+/// Wrap at ` · ` boundaries, then by display width for any part still too wide.
+fn wrap_label(label: &str, width: usize) -> Vec<String> {
+    let mut parts = label.split(" · ");
+    let mut lines = Vec::new();
+    let mut current = parts.next().unwrap_or_default().to_string();
+    for part in parts {
+        let joined = format!("{current} · {part}");
+        if display_width(&joined) <= width {
+            current = joined;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = format!("· {part}");
+        }
+    }
+    lines.push(current);
+    lines
+        .into_iter()
+        .flat_map(|line| {
+            let mut chunks = Vec::new();
+            let mut chunk = String::new();
+            for character in line.chars() {
+                let candidate = format!("{chunk}{character}");
+                if display_width(&candidate) > width && !chunk.is_empty() {
+                    chunks.push(std::mem::take(&mut chunk));
+                }
+                chunk.push(character);
+            }
+            chunks.push(chunk);
+            chunks
+        })
+        .collect()
 }
 
 pub(super) fn render_agent_row(
@@ -1018,6 +1140,162 @@ mod space_tree_render_tests {
             lines[heading_row].trim_start().starts_with("work"),
             "heading line above the agent: {:?}",
             lines[heading_row]
+        );
+    }
+}
+
+#[cfg(test)]
+mod full_tab_label_tests {
+    use super::fit_full_tab_label;
+    use crate::ui::{ResolvedToken, ResolvedTokenKind};
+
+    fn text_of(rows: &[Vec<ResolvedToken>]) -> Vec<String> {
+        rows.iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|token| match &token.kind {
+                        ResolvedTokenKind::Tab(text) | ResolvedTokenKind::Workspace(text) => {
+                            Some(text.clone())
+                        }
+                        ResolvedTokenKind::StateIcon => Some("*".into()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
+            })
+            .collect()
+    }
+
+    fn row(kinds: Vec<ResolvedTokenKind>) -> Vec<ResolvedToken> {
+        kinds
+            .into_iter()
+            .map(|kind| ResolvedToken::new(kind, Default::default()))
+            .collect()
+    }
+
+    #[test]
+    fn a_tab_label_that_fits_is_left_alone() {
+        let rows = vec![row(vec![
+            ResolvedTokenKind::StateIcon,
+            ResolvedTokenKind::Tab("o-dev · s1".into()),
+        ])];
+        assert_eq!(
+            text_of(&fit_full_tab_label(rows.clone(), 40)),
+            text_of(&rows)
+        );
+    }
+
+    #[test]
+    fn a_long_tab_label_moves_to_its_own_lines_and_is_never_cut() {
+        let label = "o-4088-4090-triage · w1-s9";
+        let rows = vec![row(vec![
+            ResolvedTokenKind::StateIcon,
+            ResolvedTokenKind::Workspace("work".into()),
+            ResolvedTokenKind::Tab(label.into()),
+        ])];
+        let fitted = fit_full_tab_label(rows, 16);
+        let lines = text_of(&fitted);
+        assert_eq!(lines[0], "*|work", "the rest of the row stays: {lines:?}");
+        // A break at " · " consumes the space before the dot, so compare the
+        // visible characters: nothing of the label may be dropped or cut.
+        let visible = |text: &str| {
+            text.chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        };
+        assert_eq!(
+            visible(&lines[1..].concat()),
+            visible(label),
+            "every character of the label survives: {lines:?}"
+        );
+        for line in &lines[1..] {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 14,
+                "a continuation line fits the width less its 2-column indent: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stack_suffix_is_kept_together_when_it_fits_on_a_line() {
+        // Break at the " · " separator first, so the stack name reads as one
+        // unit rather than being split mid-word.
+        let rows = vec![row(vec![
+            ResolvedTokenKind::StateIcon,
+            ResolvedTokenKind::Tab("o-4086-review · s2".into()),
+        ])];
+        let lines = text_of(&fit_full_tab_label(rows, 16));
+        assert!(
+            lines.contains(&"· s2".to_string()),
+            "stack kept whole: {lines:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod full_tab_label_render_tests {
+    use crate::client::shell::tests::{snapshot, surface};
+    use crate::client::shell::{ClientShellConfig, ClientShellState};
+    use crate::config::Config;
+    use crate::protocol::ClientShellAgent;
+
+    fn frame_text(state: &mut ClientShellState, width: u16) -> String {
+        let frame = state.compose(width, 40).expect("composed frame");
+        frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_default_sidebar_shows_every_character_of_a_stack_tab_label() {
+        // Default config: 26-column sidebar, where the shared fitter used to
+        // cut `<lane> · <stack>` short and drop the stack.
+        let label = "o-4088-4090-triage · w1-s9";
+        let mut fleet = snapshot();
+        fleet.tabs[0].label = label.into();
+        fleet.tabs[0].custom_label = true;
+        fleet.agents = vec![ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("o-4088-4090-triage".into()),
+            parent_agent: None,
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Working,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }];
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(fleet));
+        state.set_pane_surface(surface());
+        let text = frame_text(&mut state, 106);
+        let sidebar = text
+            .lines()
+            .map(|line| line.chars().take(26).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for piece in ["o-4088-4090-tri", "w1-s9"] {
+            assert!(
+                sidebar.contains(piece),
+                "{piece} missing from sidebar:\n{sidebar}"
+            );
+        }
+        assert!(
+            !sidebar.contains('…'),
+            "no part of the label may be ellipsised:\n{sidebar}"
         );
     }
 }

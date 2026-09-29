@@ -61,7 +61,10 @@ pub(super) fn render_expanded(
     ) {
         return;
     }
-    let rows = agent_rows(endpoints, active_endpoint_id, config);
+    let mut rows = agent_rows(endpoints, active_endpoint_id, config);
+    for row in &mut rows {
+        row.agent.keep_full_tab_label(area.width);
+    }
     super::agent_sidebar::render_agent_list(
         buffer,
         area,
@@ -70,7 +73,7 @@ pub(super) fn render_expanded(
         config,
         agent_scroll,
         hits,
-        |row| row.agent.rows.len(),
+        |row| row.agent.line_count(),
         |buffer, rect, row, hits| {
             super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
             if row.stale {
