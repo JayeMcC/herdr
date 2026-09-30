@@ -210,7 +210,7 @@ pub(crate) fn render_sidebar(
             .add_modifier(Modifier::BOLD),
     );
 
-    let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let entries = sidebar_rows(snapshot, state.collapsed_groups);
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -222,8 +222,9 @@ pub(crate) fn render_sidebar(
     hits.workspace_body = body;
     let row_heights = entries
         .iter()
-        .map(|entry| {
-            snapshot
+        .map(|row| match row {
+            SidebarRow::Heading(_) => 1,
+            SidebarRow::Workspace(entry) => snapshot
                 .workspaces
                 .get(entry.index)
                 .map(|workspace| {
@@ -237,16 +238,16 @@ pub(crate) fn render_sidebar(
                     .max(1)
                     .min(u16::MAX as usize) as u16
                 })
-                .unwrap_or(1)
+                .unwrap_or(1),
         })
         .collect::<Vec<_>>();
     let gaps = entries
         .iter()
         .enumerate()
         .map(|(index, _)| {
-            entries
-                .get(index + 1)
-                .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
+            entries.get(index + 1).map_or(0, |next| {
+                u16::from(!next.indented()) * config.spaces.row_gap
+            })
         })
         .collect::<Vec<_>>();
     let mut metrics = super::scroll::list_scroll_metrics(
@@ -256,10 +257,10 @@ pub(crate) fn render_sidebar(
         *state.workspace_scroll,
     );
     if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
-        if let Some(target) = entries
-            .iter()
-            .position(|entry| snapshot.workspaces[entry.index].focused)
-        {
+        if let Some(target) = entries.iter().position(|row| match row {
+            SidebarRow::Workspace(entry) => snapshot.workspaces[entry.index].focused,
+            SidebarRow::Heading(_) => false,
+        }) {
             *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
                 &row_heights,
                 &gaps,
@@ -283,7 +284,32 @@ pub(crate) fn render_sidebar(
     let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
     let mut y = body.y;
-    for (entry_position, entry) in entries.iter().enumerate().skip(*state.workspace_scroll) {
+    for (entry_position, row) in entries.iter().enumerate().skip(*state.workspace_scroll) {
+        let gap = entries.get(entry_position + 1).map_or(0, |next| {
+            u16::from(!next.indented()) * config.spaces.row_gap
+        });
+        let entry = match row {
+            SidebarRow::Heading(heading) => {
+                if y >= body.bottom() {
+                    break;
+                }
+                let rect = Rect::new(body.x, y, content_width, 1);
+                render_space_heading(
+                    buffer,
+                    rect,
+                    snapshot,
+                    heading,
+                    state.collapsed_groups,
+                    config.status_indicators,
+                    palette,
+                );
+                hits.space_headings
+                    .push((rect, ClientEndpointId::Local, heading.key.clone()));
+                y = y.saturating_add(1 + gap);
+                continue;
+            }
+            SidebarRow::Workspace(entry) => entry,
+        };
         let Some(workspace) = snapshot.workspaces.get(entry.index) else {
             continue;
         };
@@ -333,9 +359,6 @@ pub(crate) fn render_sidebar(
             indented: entry.indented,
             group_toggle,
         });
-        let gap = entries
-            .get(entry_position + 1)
-            .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap);
         y = y.saturating_add(row_height + gap);
     }
 
@@ -444,16 +467,17 @@ pub(crate) fn render_sidebar(
 ///
 /// Two kinds of group exist. A **worktree group** is a repository checkout
 /// with its linked worktrees under it, keyed by the repository key. A **space
-/// group** is a space labelled `<parent>` with the spaces labelled
-/// `<parent>/<child>` under it — the operator's tiered layout, where `work`
-/// holds one `work/<orchestrator>` space per orchestrator. Space-group keys are
-/// namespaced (`space:<parent>`) so a space can never share collapse state with
-/// a repository whose key happens to read the same.
+/// group** is the spaces labelled `<parent>/<child>` gathered under `<parent>` —
+/// the operator's tiered layout, where `work` holds one `work/<orchestrator>`
+/// space per orchestrator. Space-group keys are namespaced (`space:<parent>`)
+/// so a space can never share collapse state with a repository whose key
+/// happens to read the same.
 ///
 /// Worktree grouping wins: a workspace already in a worktree group is never
-/// regrouped by its label. A group needs its head AND at least one child; a
-/// `work/x` whose `work` space does not exist stays a top-level row, visible,
-/// rather than hanging off a group with no head.
+/// regrouped by its label. A space group's heading is DERIVED from its
+/// children's labels: when a space labelled `<parent>` exists it heads the
+/// group, and when none does the sidebar draws a heading row of its own, so no
+/// placeholder workspace, tab or pane has to exist to hold the tiered layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SidebarGroup {
     key: String,
@@ -498,8 +522,7 @@ fn sidebar_groups<'a>(snapshot: &'a ClientShellSnapshot) -> Vec<Option<SidebarGr
     }
     let space_parent = |workspace: &'a ClientShellWorkspace| -> Option<&'a str> {
         let (parent, child) = workspace.label.split_once('/')?;
-        (!parent.is_empty() && !child.is_empty() && space_heads.contains_key(parent))
-            .then_some(parent)
+        (!parent.is_empty() && !child.is_empty()).then_some(parent)
     };
     let mut space_children = HashMap::<&str, usize>::new();
     for workspace in &snapshot.workspaces {
@@ -537,72 +560,200 @@ fn sidebar_groups<'a>(snapshot: &'a ClientShellSnapshot) -> Vec<Option<SidebarGr
         .collect()
 }
 
+/// A heading row for a space group that has no space of its own to head it:
+/// every `<parent>/<child>` space exists but `<parent>` does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::client::shell) struct SpaceHeading {
+    pub(in crate::client::shell) key: String,
+    pub(in crate::client::shell) label: String,
+    /// Every space in the group, in snapshot order.
+    pub(in crate::client::shell) members: Vec<usize>,
+}
+
+impl SpaceHeading {
+    /// The most urgent status among the group's spaces.
+    pub(in crate::client::shell) fn status(
+        &self,
+        snapshot: &ClientShellSnapshot,
+    ) -> crate::api::schema::AgentStatus {
+        self.members
+            .iter()
+            .filter_map(|member| snapshot.workspaces.get(*member))
+            .map(|workspace| workspace.agent_status)
+            .max_by_key(|status| status_priority(*status))
+            .unwrap_or(crate::api::schema::AgentStatus::Unknown)
+    }
+}
+
+/// One row of the spaces list: a space, or a derived group heading.
+#[derive(Clone)]
+pub(in crate::client::shell) enum SidebarRow {
+    Workspace(WorkspaceEntry),
+    Heading(SpaceHeading),
+}
+
+impl SidebarRow {
+    pub(in crate::client::shell) fn indented(&self) -> bool {
+        match self {
+            Self::Workspace(entry) => entry.indented,
+            Self::Heading(_) => false,
+        }
+    }
+}
+
+/// The spaces the sidebar lists, in render order. Derived headings are left
+/// out, so every entry names a real space.
 pub(crate) fn workspace_entries(
     snapshot: &ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
 ) -> Vec<WorkspaceEntry> {
+    sidebar_rows(snapshot, collapsed_groups)
+        .into_iter()
+        .filter_map(|row| match row {
+            SidebarRow::Workspace(entry) => Some(entry),
+            SidebarRow::Heading(_) => None,
+        })
+        .collect()
+}
+
+/// The spaces list in render order, derived headings included.
+pub(in crate::client::shell) fn sidebar_rows(
+    snapshot: &ClientShellSnapshot,
+    collapsed_groups: &HashSet<String>,
+) -> Vec<SidebarRow> {
     let groups = sidebar_groups(snapshot);
     let mut members = HashMap::<&str, Vec<usize>>::new();
+    let mut headed = HashSet::<&str>::new();
     for (index, group) in groups.iter().enumerate() {
         if let Some(group) = group {
             members.entry(group.key.as_str()).or_default().push(index);
+            if group.head {
+                headed.insert(group.key.as_str());
+            }
         }
     }
     // A group renders where its HEAD sits, so a child listed ahead of its
     // parent is pulled under it rather than dragging the whole group up the
-    // sidebar. Every group has a head by construction (`sidebar_groups` only
-    // groups under an existing head), so skipping children here cannot drop
-    // one.
-    let mut entries = Vec::new();
+    // sidebar. A group with no head space renders where its FIRST member sits,
+    // under a derived heading, so skipping the other members cannot drop one.
+    let mut rows = Vec::new();
     for (index, group) in groups.iter().enumerate() {
         let Some(group) = group else {
-            entries.push(WorkspaceEntry {
+            rows.push(SidebarRow::Workspace(WorkspaceEntry {
                 index,
                 indented: false,
                 last_child: false,
-            });
+            }));
             continue;
         };
-        if !group.head {
-            continue;
-        }
         let Some(group_members) = members.get(group.key.as_str()) else {
             continue;
         };
-        let parent = index;
-        entries.push(WorkspaceEntry {
-            index: parent,
-            indented: false,
-            last_child: false,
-        });
-        if collapsed_groups.contains(&group.key) {
-            if let Some(active) = group_members
-                .iter()
-                .copied()
-                .find(|member| *member != parent && snapshot.workspaces[*member].focused)
-            {
-                entries.push(WorkspaceEntry {
-                    index: active,
-                    indented: true,
-                    last_child: true,
-                });
-            }
+        let parent = if group.head {
+            rows.push(SidebarRow::Workspace(WorkspaceEntry {
+                index,
+                indented: false,
+                last_child: false,
+            }));
+            Some(index)
+        } else if !headed.contains(group.key.as_str()) && group_members.first() == Some(&index) {
+            let label = group
+                .key
+                .strip_prefix(SPACE_GROUP_PREFIX)
+                .unwrap_or(&group.key)
+                .to_string();
+            rows.push(SidebarRow::Heading(SpaceHeading {
+                key: group.key.clone(),
+                label,
+                members: group_members.clone(),
+            }));
+            None
+        } else {
             continue;
-        }
+        };
         let children = group_members
             .iter()
             .copied()
-            .filter(|member| *member != parent)
+            .filter(|member| Some(*member) != parent)
             .collect::<Vec<_>>();
+        if collapsed_groups.contains(&group.key) {
+            if let Some(active) = children
+                .iter()
+                .copied()
+                .find(|member| snapshot.workspaces[*member].focused)
+            {
+                rows.push(SidebarRow::Workspace(WorkspaceEntry {
+                    index: active,
+                    indented: true,
+                    last_child: true,
+                }));
+            }
+            continue;
+        }
         for (child_index, child) in children.iter().enumerate() {
-            entries.push(WorkspaceEntry {
+            rows.push(SidebarRow::Workspace(WorkspaceEntry {
                 index: *child,
                 indented: true,
                 last_child: child_index + 1 == children.len(),
-            });
+            }));
         }
     }
-    entries
+    rows
+}
+
+/// Draw a derived group heading: status of its most urgent space, the parent
+/// label, and the collapse toggle. The whole row toggles the group.
+pub(in crate::client::shell) fn render_space_heading(
+    buffer: &mut Buffer,
+    rect: Rect,
+    snapshot: &ClientShellSnapshot,
+    heading: &SpaceHeading,
+    collapsed_groups: &HashSet<String>,
+    indicators: crate::config::StatusIndicatorStyle,
+    palette: &Palette,
+) {
+    if rect.is_empty() {
+        return;
+    }
+    let status = heading.status(snapshot);
+    let x = put_segment(
+        buffer,
+        rect.x.saturating_add(1),
+        rect.y,
+        rect.right().saturating_sub(1),
+        status_icon(status, indicators),
+        Style::default().fg(status_color(status, palette)),
+    );
+    let x = put_segment(
+        buffer,
+        x,
+        rect.y,
+        rect.right().saturating_sub(1),
+        " ",
+        Style::default(),
+    );
+    put_segment(
+        buffer,
+        x,
+        rect.y,
+        rect.right().saturating_sub(2),
+        &heading.label,
+        Style::default()
+            .fg(palette.subtext0)
+            .add_modifier(Modifier::BOLD),
+    );
+    put_text(
+        buffer,
+        rect.right().saturating_sub(1),
+        rect.y,
+        1,
+        if collapsed_groups.contains(&heading.key) {
+            "▸"
+        } else {
+            "▾"
+        },
+        Style::default().fg(palette.accent),
+    );
 }
 
 /// The collapse key of the group this space HEADS, if it heads one.
@@ -824,7 +975,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
 
 #[cfg(test)]
 mod space_group_tests {
-    use super::{displayed_workspace_status, parent_group_key, workspace_entries};
+    use super::{
+        displayed_workspace_status, parent_group_key, sidebar_rows, workspace_entries, SidebarRow,
+    };
     use crate::api::schema::AgentStatus;
     use crate::protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientShellWorktree};
     use std::collections::HashSet;
@@ -886,14 +1039,82 @@ mod space_group_tests {
         );
     }
 
+    /// Render order with derived headings: `(label, indented)`, a heading as
+    /// `("<label>:heading", false)`.
+    fn rows(snapshot: &ClientShellSnapshot, collapsed: &HashSet<String>) -> Vec<(String, bool)> {
+        sidebar_rows(snapshot, collapsed)
+            .into_iter()
+            .map(|row| match row {
+                SidebarRow::Workspace(entry) => (
+                    snapshot.workspaces[entry.index].label.clone(),
+                    entry.indented,
+                ),
+                SidebarRow::Heading(heading) => (format!("{}:heading", heading.label), false),
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_slash_label_with_no_parent_space_is_a_top_level_row() {
-        // The parent space is missing (not yet created, or closed). The child
-        // must stay visible rather than vanish into a group with no head.
-        let snapshot = fleet(vec![space("w1", "meta"), space("w2", "work/o-a")]);
+    fn a_slash_label_with_no_parent_space_nests_under_a_derived_heading() {
+        // No `work` space exists, so no placeholder terminal holds the group:
+        // the heading is derived from the children, and every child stays
+        // visible under it.
+        let snapshot = fleet(vec![
+            space("w1", "meta"),
+            space("w2", "work/o-a"),
+            space("w3", "infra"),
+            space("w4", "work/o-b"),
+        ]);
         assert_eq!(
-            shape(&snapshot, &HashSet::new()),
-            vec![row("meta", false), row("work/o-a", false)]
+            rows(&snapshot, &HashSet::new()),
+            vec![
+                row("meta", false),
+                row("work:heading", false),
+                row("work/o-a", true),
+                row("work/o-b", true),
+                row("infra", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_derived_heading_collapses_under_the_same_key_a_parent_space_uses() {
+        // The collapse key must not depend on whether `work` is a real space,
+        // so closing the last child and opening another, or creating and
+        // closing a `work` space, keeps the group's collapse state.
+        let with_parent = fleet(vec![space("w1", "work"), space("w2", "work/o-a")]);
+        let key = parent_group_key(&with_parent, 0).expect("work heads a group");
+        let mut derived = fleet(vec![space("w5", "work/o-new"), space("w6", "work/o-b")]);
+        derived.workspaces[1].focused = true;
+        let collapsed = HashSet::from([key.clone()]);
+        assert_eq!(
+            rows(&derived, &collapsed),
+            vec![row("work:heading", false), row("work/o-b", true)]
+        );
+        let SidebarRow::Heading(heading) = &sidebar_rows(&derived, &collapsed)[0] else {
+            panic!("first row is the derived heading");
+        };
+        assert_eq!(heading.key, key);
+    }
+
+    #[test]
+    fn a_derived_heading_reports_its_most_urgent_space() {
+        let mut snapshot = fleet(vec![space("w1", "work/o-a"), space("w2", "work/o-b")]);
+        snapshot.workspaces[0].agent_status = AgentStatus::Idle;
+        snapshot.workspaces[1].agent_status = AgentStatus::Blocked;
+        let SidebarRow::Heading(heading) = &sidebar_rows(&snapshot, &HashSet::new())[0] else {
+            panic!("first row is the derived heading");
+        };
+        assert_eq!(heading.status(&snapshot), AgentStatus::Blocked);
+    }
+
+    #[test]
+    fn a_single_child_still_gets_a_derived_heading() {
+        // The group shows while at least one `<parent>/<child>` exists.
+        let snapshot = fleet(vec![space("w1", "work/o-a")]);
+        assert_eq!(
+            rows(&snapshot, &HashSet::new()),
+            vec![row("work:heading", false), row("work/o-a", true)]
         );
     }
 
