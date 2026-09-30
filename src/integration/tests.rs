@@ -1031,6 +1031,113 @@ fn install_claude_is_idempotent_for_hook_entries() {
 }
 
 #[test]
+fn reinstalling_claude_over_a_pre_rename_install_leaves_one_hook_under_the_new_name() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    let hooks_dir = claude_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    std::env::set_var("HOME", &home);
+
+    // What a machine has before the rename: the upstream file name, the
+    // upstream marker spelling, and settings.json pointing at that file.
+    let old_hook = hooks_dir.join("herdr-agent-state.sh");
+    fs::write(
+        &old_hook,
+        "#!/bin/sh\n# HERDR_INTEGRATION_ID=claude\n# HERDR_INTEGRATION_VERSION=10\n",
+    )
+    .unwrap();
+    let old_command = hook_command(&old_hook, Some("session"));
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({
+            "hooks": {"SessionStart": [{"matcher": "startup|resume|clear|compact",
+                "hooks": [{"type": "command", "command": old_command, "timeout": 10}]}]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let installed = install_claude().unwrap();
+
+    assert!(!old_hook.exists(), "the pre-rename hook file is removed");
+    assert_eq!(
+        installed.hook_path,
+        hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME)
+    );
+    let settings = fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+    assert!(!settings.contains("herdr-agent-state.sh"), "{settings}");
+    let settings: Value = serde_json::from_str(&settings).unwrap();
+    let session_start = settings["hooks"]["SessionStart"].as_array().unwrap();
+    assert_eq!(session_start.len(), 1, "exactly one SessionStart hook");
+
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn migrating_a_shared_session_start_entry_keeps_the_users_other_hooks() {
+    // Measured on the operator's real settings.json: the pre-rename hook shared
+    // one SessionStart entry with two user hooks.
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    let hooks_dir = claude_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    std::env::set_var("HOME", &home);
+    let old_hook = hooks_dir.join("herdr-agent-state.sh");
+    fs::write(
+        &old_hook,
+        "# HERDR_INTEGRATION_ID=claude\n# HERDR_INTEGRATION_VERSION=10\n",
+    )
+    .unwrap();
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({"hooks": {"SessionStart": [{"hooks": [
+            {"type": "command", "command": "python3 sweep.py"},
+            {"type": "command", "command": hook_command(&old_hook, Some("session"))},
+            {"type": "command", "command": "node verify.cjs"},
+        ]}]}})
+        .to_string(),
+    )
+    .unwrap();
+
+    install_claude().unwrap();
+
+    let settings = fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+    assert!(settings.contains("python3 sweep.py"), "{settings}");
+    assert!(settings.contains("node verify.cjs"), "{settings}");
+    assert!(!settings.contains("herdr-agent-state.sh"), "{settings}");
+    assert_eq!(
+        settings.matches(CLAUDE_HOOK_INSTALL_NAME).count(),
+        1,
+        "{settings}"
+    );
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn a_users_own_file_with_the_upstream_hook_name_is_not_removed() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    let hooks_dir = home.join(".claude").join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    std::env::set_var("HOME", &home);
+    let theirs = hooks_dir.join("herdr-agent-state.sh");
+    fs::write(&theirs, "#!/bin/sh\necho my own script\n").unwrap();
+
+    install_claude().unwrap();
+
+    assert!(theirs.exists(), "no integration marker, so it is not ours");
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks() {
     let _lock = integration_env_lock();
     let base = unique_base();
@@ -1302,7 +1409,7 @@ fn codex_v2_integration_status_is_outdated() {
 
     assert_eq!(codex.path, hook_path);
     assert_eq!(codex.installed_version, Some(2));
-    assert_eq!(codex.expected_version, 8);
+    assert_eq!(codex.expected_version, CODEX_INTEGRATION_VERSION);
     assert_eq!(codex.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");
@@ -3433,9 +3540,11 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
     assert!(command.ends_with("session"));
     assert!(settings.get("permissions").is_some());
     let hook_asset = fs::read_to_string(&installed.hook_path).unwrap();
-    assert!(hook_asset.contains("HERDR_INTEGRATION_ID=qwen"));
-    assert!(hook_asset.contains("HERDR_INTEGRATION_VERSION=1"));
-    assert!(hook_asset.contains("herdr:qwen"));
+    assert!(hook_asset.contains("TWODR_INTEGRATION_ID=qwen"));
+    assert!(hook_asset.contains(&format!(
+        "TWODR_INTEGRATION_VERSION={QWEN_INTEGRATION_VERSION}"
+    )));
+    assert!(hook_asset.contains("twodr:qwen"));
 
     install_qwen().unwrap();
     let settings: Value =
@@ -3588,9 +3697,16 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_herdr, permissions).unwrap();
 
+    // The hook reads TWODR_* before the HERDR_* alias, and a test run inside a
+    // twodr pane inherits the real TWODR_*, which would win over this fixture
+    // and drive the live server. Clear them so the fixture is what is read.
     let mut child = Command::new("sh")
         .arg(&installed.hook_path)
         .arg("session")
+        .env_remove("TWODR_ENV")
+        .env_remove("TWODR_PANE_ID")
+        .env_remove("TWODR_SOCKET_PATH")
+        .env_remove("TWODR_BIN_PATH")
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", "w1:p2")
         .env("HERDR_SOCKET_PATH", "/tmp/herdr.sock")
@@ -3614,7 +3730,7 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     assert!(output.stderr.is_empty());
     let args = fs::read_to_string(capture).unwrap();
     assert!(args.contains("report-agent-session w1:p2"));
-    assert!(args.contains("--source herdr:letta --agent letta"));
+    assert!(args.contains("--source twodr:letta --agent letta"));
     assert!(args.contains("--agent-session-id default:agent-123"));
     assert!(args.contains("--session-start-source resume"));
 
@@ -3812,7 +3928,9 @@ fn install_cursor_uses_cursor_config_dir_env() {
 }
 
 #[test]
-fn cursor_v1_integration_status_is_current() {
+fn cursor_v1_integration_status_is_outdated() {
+    // v2 reads TWODR_* before the HERDR_* alias, so a v1 hook stops reporting
+    // once twodr drops the alias and must be offered a reinstall.
     let _lock = integration_env_lock();
     let base = unique_base();
     let cursor_dir = base.join(".cursor");
@@ -3830,8 +3948,9 @@ fn cursor_v1_integration_status_is_current() {
         .iter()
         .find(|status| status.target == crate::api::schema::IntegrationTarget::Cursor)
         .expect("cursor integration status");
-    assert_eq!(cursor.state, IntegrationStatusKind::Current);
-    assert_eq!(cursor.installed_version, Some(CURSOR_INTEGRATION_VERSION));
+    assert_eq!(cursor.state, IntegrationStatusKind::Outdated);
+    assert_eq!(cursor.installed_version, Some(1));
+    assert_eq!(cursor.expected_version, CURSOR_INTEGRATION_VERSION);
 
     clear_integration_path_env();
     let _ = fs::remove_dir_all(base);
@@ -3957,7 +4076,7 @@ fn install_grok_writes_hook_and_config() {
     #[cfg(not(windows))]
     {
         assert!(command.starts_with("sh "));
-        assert!(command.contains("herdr-agent-state.sh"));
+        assert!(command.contains(GROK_HOOK_INSTALL_NAME));
         assert!(command.ends_with(" session"));
     }
 
@@ -4331,8 +4450,11 @@ fn antigravity_cli_v2_install_is_outdated_until_reinstalled() {
     fs::create_dir_all(&hook_dir).unwrap();
     fs::write(
         hook_dir.join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME),
-        ANTIGRAVITY_CLI_HOOK_ASSET
-            .replace("HERDR_INTEGRATION_VERSION=3", "HERDR_INTEGRATION_VERSION=2"),
+        ANTIGRAVITY_CLI_HOOK_ASSET.replace(
+            // An old install: the pre-rename marker spelling at an old version.
+            &format!("TWODR_INTEGRATION_VERSION={ANTIGRAVITY_CLI_INTEGRATION_VERSION}"),
+            "HERDR_INTEGRATION_VERSION=2",
+        ),
     )
     .unwrap();
     std::env::set_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
@@ -4346,7 +4468,10 @@ fn antigravity_cli_v2_install_is_outdated_until_reinstalled() {
     let outdated = status();
     assert_eq!(outdated.state, IntegrationStatusKind::Outdated);
     assert_eq!(outdated.installed_version, Some(2));
-    assert_eq!(outdated.expected_version, 3);
+    assert_eq!(
+        outdated.expected_version,
+        ANTIGRAVITY_CLI_INTEGRATION_VERSION
+    );
 
     install_antigravity_cli().unwrap();
     assert_eq!(status().state, IntegrationStatusKind::Current);
@@ -4509,7 +4634,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     // nonfunctional, so neither may report current.
     fs::write(
         &config_path,
-        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo herdr-agent-state.sh"}]}]}}"#,
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo twodr-agent-state.sh"}]}]}}"#,
     )
     .unwrap();
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);

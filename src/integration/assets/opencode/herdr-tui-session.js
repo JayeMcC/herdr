@@ -1,11 +1,17 @@
 // installed by herdr
 // managed by herdr; reinstalling or updating the integration overwrites this file.
-// HERDR_INTEGRATION_ID=opencode-tui
-// HERDR_INTEGRATION_VERSION=12
+// TWODR_INTEGRATION_ID=opencode-tui
+// TWODR_INTEGRATION_VERSION=12
 
 import net from "node:net";
 
-const SOURCE = "herdr:opencode";
+// twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+// Prefer the twodr name so a pane from either side of that change reports.
+for (const name of ["ENV", "PANE_ID", "SOCKET_PATH"]) {
+  if (process.env[`TWODR_${name}`]) process.env[`HERDR_${name}`] = process.env[`TWODR_${name}`];
+}
+
+const SOURCE = "twodr:opencode";
 const AGENT = "opencode";
 const ROUTE_POLL_INTERVAL_MS = 100;
 const SELECTION_RETRY_DELAYS_MS = [100, 400, 1_000];

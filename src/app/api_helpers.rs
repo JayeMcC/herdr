@@ -207,7 +207,45 @@ pub(super) const MAX_METADATA_TOKEN_KEYS_PER_RESOURCE: usize = 32;
 const MAX_METADATA_TOKEN_KEY_LEN: usize = 32;
 const MAX_METADATA_TOKEN_VALUE_LEN: usize = 80;
 
+/// Integration hooks name themselves `<product>:<agent>`. The fork's own hooks
+/// say `twodr:<agent>`; hooks installed before the rename, and every record
+/// already persisted (sessions, imported lanes, resume plans), say
+/// `herdr:<agent>`. The server keeps ONE canonical spelling, the persisted one,
+/// so both kinds of hook drive the same authority and resume logic and no
+/// stored record changes meaning. This is the only place the alias is read.
+pub(super) fn canonical_integration_source(source: String) -> String {
+    match source.strip_prefix("twodr:") {
+        Some(rest) => format!("herdr:{rest}"),
+        None => source,
+    }
+}
+
+/// Apply `canonical_integration_source` to every request that carries an
+/// integration source, before any handler sees it.
+pub(super) fn canonicalize_integration_sources(
+    mut request: crate::api::schema::Request,
+) -> crate::api::schema::Request {
+    use crate::api::schema::Method;
+    match &mut request.method {
+        Method::PaneReportAgent(params) => {
+            params.source = canonical_integration_source(std::mem::take(&mut params.source));
+        }
+        Method::PaneReportAgentSession(params) => {
+            params.source = canonical_integration_source(std::mem::take(&mut params.source));
+        }
+        Method::PaneReleaseAgent(params) => {
+            params.source = canonical_integration_source(std::mem::take(&mut params.source));
+        }
+        Method::PaneClearAgentAuthority(params) => {
+            params.source = params.source.take().map(canonical_integration_source);
+        }
+        _ => {}
+    }
+    request
+}
+
 pub(super) fn normalize_metadata_source(value: String) -> Result<String, &'static str> {
+    let value = canonical_integration_source(value);
     let value = value.trim();
     if value.is_empty() {
         return Err("metadata source must not be empty");
@@ -312,5 +350,27 @@ mod metadata_token_tests {
             .map(|index| (format!("key{index}"), Some("value".into())))
             .collect();
         assert!(normalize_metadata_tokens(too_many).is_err());
+    }
+
+    #[test]
+    fn a_twodr_integration_source_is_stored_under_the_persisted_spelling() {
+        // New hooks say twodr:<agent>; persisted sessions and resume plans say
+        // herdr:<agent>. Both must land on the same record.
+        assert_eq!(
+            super::canonical_integration_source("twodr:codex".into()),
+            "herdr:codex"
+        );
+        assert_eq!(
+            super::canonical_integration_source("herdr:codex".into()),
+            "herdr:codex"
+        );
+        assert_eq!(
+            super::canonical_integration_source("custom:orchestrator".into()),
+            "custom:orchestrator"
+        );
+        assert_eq!(
+            normalize_metadata_source("twodr:pi".into()).as_deref(),
+            Ok("herdr:pi")
+        );
     }
 }

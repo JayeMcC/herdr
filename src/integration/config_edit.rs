@@ -368,6 +368,13 @@ pub(crate) fn remove_direct_hook_commands(
 pub(crate) fn hook_command_variants(hook_path: &Path, action: Option<&str>) -> Vec<String> {
     let mut commands = vec![hook_command(hook_path, action)];
     push_unique_command(&mut commands, legacy_bash_hook_command(hook_path, action));
+    // A hook installed before the rename sits beside this one under the upstream
+    // `herdr-` file name. Its settings entry is matched too, so reinstalling
+    // replaces it instead of leaving two hooks registered.
+    if let Some(upstream) = super::file_ops::upstream_named_hook_path(hook_path) {
+        push_unique_command(&mut commands, hook_command(&upstream, action));
+        push_unique_command(&mut commands, legacy_bash_hook_command(&upstream, action));
+    }
 
     #[cfg(windows)]
     {

@@ -1,10 +1,15 @@
 # installed by herdr
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
-# HERDR_INTEGRATION_ID=grok
-# HERDR_INTEGRATION_VERSION=2
+# TWODR_INTEGRATION_ID=grok
+# TWODR_INTEGRATION_VERSION=2
 
 param([string]$Action = "")
+# twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+# Prefer the twodr name so a pane from either side of that change reports.
+if ($env:TWODR_ENV) { $env:HERDR_ENV = $env:TWODR_ENV }
+if ($env:TWODR_PANE_ID) { $env:HERDR_PANE_ID = $env:TWODR_PANE_ID }
+if ($env:TWODR_BIN_PATH) { $env:HERDR_BIN_PATH = $env:TWODR_BIN_PATH }
 
 if ($Action -ne "session") { exit 0 }
 if ($env:HERDR_ENV -ne "1") { exit 0 }
@@ -43,7 +48,7 @@ $seq = [DateTime]::UtcNow.Ticks
 $herdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else { $env:HERDR_BIN_PATH }
 $herdrArgs = @(
     "pane", "report-agent-session", $env:HERDR_PANE_ID,
-    "--source", "herdr:grok",
+    "--source", "twodr:grok",
     "--agent", "grok",
     "--seq", "$seq",
     "--agent-session-id", "$sessionId"

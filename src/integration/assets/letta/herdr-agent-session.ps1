@@ -1,8 +1,14 @@
 # managed by herdr; reinstalling the integration replaces this file.
-# HERDR_INTEGRATION_ID=letta
-# HERDR_INTEGRATION_VERSION=1
+# TWODR_INTEGRATION_ID=letta
+# TWODR_INTEGRATION_VERSION=1
 
 param([string]$Action = "")
+# twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+# Prefer the twodr name so a pane from either side of that change reports.
+if ($env:TWODR_ENV) { $env:HERDR_ENV = $env:TWODR_ENV }
+if ($env:TWODR_PANE_ID) { $env:HERDR_PANE_ID = $env:TWODR_PANE_ID }
+if ($env:TWODR_SOCKET_PATH) { $env:HERDR_SOCKET_PATH = $env:TWODR_SOCKET_PATH }
+if ($env:TWODR_BIN_PATH) { $env:HERDR_BIN_PATH = $env:TWODR_BIN_PATH }
 
 if ($Action -ne "session") { exit 0 }
 if ($env:HERDR_ENV -ne "1") { exit 0 }
@@ -27,7 +33,7 @@ $herdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else
 $source = if ($payload.is_new_session -eq $true) { "new" } else { "resume" }
 $commandArgs = @(
     "pane", "report-agent-session", $env:HERDR_PANE_ID,
-    "--source", "herdr:letta", "--agent", "letta",
+    "--source", "twodr:letta", "--agent", "letta",
     "--agent-session-id", $sessionId,
     "--seq", [string][DateTime]::UtcNow.Ticks,
     "--session-start-source", $source

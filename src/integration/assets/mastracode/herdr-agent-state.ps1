@@ -1,10 +1,15 @@
 # installed by herdr
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
-# HERDR_INTEGRATION_ID=mastracode
-# HERDR_INTEGRATION_VERSION=2
+# TWODR_INTEGRATION_ID=mastracode
+# TWODR_INTEGRATION_VERSION=3
 
 param([string]$Action = "")
+# twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+# Prefer the twodr name so a pane from either side of that change reports.
+if ($env:TWODR_ENV) { $env:HERDR_ENV = $env:TWODR_ENV }
+if ($env:TWODR_PANE_ID) { $env:HERDR_PANE_ID = $env:TWODR_PANE_ID }
+if ($env:TWODR_BIN_PATH) { $env:HERDR_BIN_PATH = $env:TWODR_BIN_PATH }
 
 if ($Action -notin @("session", "working", "idle", "blocked")) { exit 0 }
 if ($env:HERDR_ENV -ne "1") { exit 0 }
@@ -23,9 +28,9 @@ $herdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else
 try {
     if ($Action -eq "session") {
         if ([string]::IsNullOrWhiteSpace($sessionId)) { exit 0 }
-        & $herdr pane report-agent-session $env:HERDR_PANE_ID --source herdr:mastracode --agent mastracode --seq $seq --session-start-source startup --agent-session-id $sessionId 2>$null | Out-Null
+        & $herdr pane report-agent-session $env:HERDR_PANE_ID --source twodr:mastracode --agent mastracode --seq $seq --session-start-source startup --agent-session-id $sessionId 2>$null | Out-Null
     } else {
-        $args = @("pane", "report-agent", $env:HERDR_PANE_ID, "--source", "herdr:mastracode", "--agent", "mastracode", "--state", $Action, "--seq", "$seq")
+        $args = @("pane", "report-agent", $env:HERDR_PANE_ID, "--source", "twodr:mastracode", "--agent", "mastracode", "--state", $Action, "--seq", "$seq")
         if (-not [string]::IsNullOrWhiteSpace($sessionId)) {
             $args += @("--agent-session-id", $sessionId)
         }

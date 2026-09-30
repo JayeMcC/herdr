@@ -10,13 +10,48 @@ pub(crate) fn remove_file_if_exists(path: &Path) -> io::Result<bool> {
     }
 }
 
-#[cfg(windows)]
-pub(crate) fn legacy_bash_hook_path(hook_path: &Path) -> std::path::PathBuf {
-    hook_path.with_file_name("herdr-agent-state.sh")
+/// The path the same hook had before this fork named its files `twodr-…`:
+/// `twodr-agent-state.sh` → `herdr-agent-state.sh`. None when the name has no
+/// fork prefix, so there is nothing older to migrate.
+pub(crate) fn upstream_named_hook_path(hook_path: &Path) -> Option<std::path::PathBuf> {
+    let name = hook_path.file_name()?.to_str()?;
+    let rest = name.strip_prefix("twodr-")?;
+    Some(hook_path.with_file_name(format!("herdr-{rest}")))
+}
+
+/// Remove the pre-rename copy of a hook, but only when it is a file this
+/// program installed (it carries an integration marker). A user's own file
+/// that happens to share the name is left alone.
+pub(crate) fn remove_upstream_named_hook_file(hook_path: &Path) -> io::Result<bool> {
+    let Some(upstream) = upstream_named_hook_path(hook_path) else {
+        return Ok(false);
+    };
+    let content = match fs::read_to_string(&upstream) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    if super::is_installed_integration_file(&content, None) {
+        fs::remove_file(upstream)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 #[cfg(windows)]
+pub(crate) fn legacy_bash_hook_path(hook_path: &Path) -> std::path::PathBuf {
+    hook_path.with_file_name("twodr-agent-state.sh")
+}
+
+/// Remove the older copies of an installed hook: the pre-rename `herdr-` file
+/// and, on Windows, the bash hook that preceded the PowerShell one.
 pub(crate) fn remove_legacy_bash_hook_file(hook_path: &Path) -> io::Result<bool> {
+    Ok(remove_upstream_named_hook_file(hook_path)?
+        | remove_legacy_windows_bash_hook_file(hook_path)?)
+}
+
+#[cfg(windows)]
+fn remove_legacy_windows_bash_hook_file(hook_path: &Path) -> io::Result<bool> {
     let legacy_path = legacy_bash_hook_path(hook_path);
     let content = match fs::read_to_string(&legacy_path) {
         Ok(content) => content,
@@ -24,7 +59,7 @@ pub(crate) fn remove_legacy_bash_hook_file(hook_path: &Path) -> io::Result<bool>
         Err(err) => return Err(err),
     };
 
-    if content.contains("HERDR_INTEGRATION_ID=") {
+    if super::is_installed_integration_file(&content, None) {
         fs::remove_file(legacy_path)?;
         return Ok(true);
     }
@@ -33,7 +68,7 @@ pub(crate) fn remove_legacy_bash_hook_file(hook_path: &Path) -> io::Result<bool>
 }
 
 #[cfg(not(windows))]
-pub(crate) fn remove_legacy_bash_hook_file(_hook_path: &Path) -> io::Result<bool> {
+fn remove_legacy_windows_bash_hook_file(_hook_path: &Path) -> io::Result<bool> {
     Ok(false)
 }
 

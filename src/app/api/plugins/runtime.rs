@@ -79,6 +79,7 @@ impl App {
                 link_handler_id.clone(),
             ));
         }
+        let env = super::env::with_twodr_names(env);
         if self.state.plugin_commands_in_flight >= MAX_PLUGIN_COMMANDS_IN_FLIGHT {
             let message = format!(
                 "maximum concurrent plugin commands reached ({MAX_PLUGIN_COMMANDS_IN_FLIGHT})"

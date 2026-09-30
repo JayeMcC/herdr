@@ -4,6 +4,12 @@ import net, { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// The assets read TWODR_* before the HERDR_* alias. A run inside a twodr pane
+// inherits the real TWODR_*, which would override these fixtures, so clear it.
+for (const name of ["TWODR_ENV", "TWODR_PANE_ID", "TWODR_SOCKET_PATH", "TWODR_BIN_PATH"]) {
+  delete process.env[name];
+}
+
 const originalPlatform = process.platform;
 const originalCreateConnection = net.createConnection;
 const originalEnvironment = {
@@ -145,6 +151,38 @@ for (const socketPlugin of socketPlugins) {
     });
 
     expect(connectedEndpoint()).toBe(`\\\\.\\pipe\\${markerPath}`);
+  });
+}
+
+for (const socketPlugin of socketPlugins) {
+  test(`${socketPlugin.name} reads the twodr pane environment without the HERDR_* alias`, async () => {
+    // A pane created after twodr stops exporting HERDR_* carries only TWODR_*.
+    const markerPath = `twodr-${socketPlugin.name.toLowerCase()}-${process.pid}.sock`;
+    delete process.env.HERDR_ENV;
+    delete process.env.HERDR_SOCKET_PATH;
+    delete process.env.HERDR_PANE_ID;
+    process.env.TWODR_ENV = "1";
+    process.env.TWODR_SOCKET_PATH = markerPath;
+    process.env.TWODR_PANE_ID = "test:p1";
+    Object.defineProperty(process, "platform", { value: "win32" });
+    const connectedEndpoint = captureConnectionEndpoint();
+
+    try {
+      const { HerdrAgentStatePlugin } = await importFresh(socketPlugin.modulePath);
+      const plugin = await HerdrAgentStatePlugin();
+      await plugin.event({
+        event: {
+          type: "session.updated",
+          properties: { sessionID: socketPlugin.sessionID },
+        },
+      });
+
+      expect(connectedEndpoint()).toBe(`\\\\.\\pipe\\${markerPath}`);
+    } finally {
+      delete process.env.TWODR_ENV;
+      delete process.env.TWODR_SOCKET_PATH;
+      delete process.env.TWODR_PANE_ID;
+    }
   });
 }
 

@@ -13,7 +13,8 @@ struct RawPluginManifest {
     id: String,
     name: String,
     version: String,
-    #[serde(default)]
+    /// `min_twodr_version` is accepted as this fork's spelling of the key.
+    #[serde(default, alias = "min_twodr_version")]
     min_herdr_version: Option<String>,
     #[serde(default)]
     description: Option<String>,
@@ -115,13 +116,25 @@ impl TryFrom<String> for RawPlatform {
     }
 }
 
+/// A plugin directory's manifest. `twodr-plugin.toml` is this fork's name for
+/// it; `herdr-plugin.toml` is the upstream name that every existing plugin
+/// ships, and it is used when no `twodr-plugin.toml` exists.
+pub(crate) fn plugin_manifest_in(dir: &std::path::Path) -> std::path::PathBuf {
+    let twodr = dir.join("twodr-plugin.toml");
+    if twodr.is_file() {
+        twodr
+    } else {
+        dir.join("herdr-plugin.toml")
+    }
+}
+
 pub(crate) fn load_plugin_manifest(
     path: &str,
     enabled: bool,
 ) -> Result<InstalledPluginInfo, (&'static str, String)> {
     let path = std::path::PathBuf::from(path);
     let manifest_path = if path.is_dir() {
-        path.join("herdr-plugin.toml")
+        plugin_manifest_in(&path)
     } else {
         path
     };
