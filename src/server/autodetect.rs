@@ -583,11 +583,17 @@ test "$sid" = "$$"
             "unexpected error: {message}"
         );
         assert!(
-            message.contains("Run `herdr session stop work`"),
+            message.contains(&format!(
+                "Run `{} session stop work`",
+                crate::build_info::COMMAND_NAME
+            )),
             "unexpected error: {message}"
         );
         assert!(
-            message.contains("then run `herdr session attach work` again"),
+            message.contains(&format!(
+                "then run `{} session attach work` again",
+                crate::build_info::COMMAND_NAME
+            )),
             "unexpected error: {message}"
         );
         std::env::remove_var("XDG_CONFIG_HOME");

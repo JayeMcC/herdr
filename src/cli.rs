@@ -22,6 +22,41 @@ macro_rules! println {
     }};
 }
 
+// CLI messages are written with the upstream `herdr ` command prefix, which is
+// kept as-is so upstream edits to them still merge. The prefix is swapped for
+// this binary's real name when printed, so a usage line tells the user a
+// command they can actually run. Only a leading `herdr ` and `` `herdr `` are
+// rewritten; `herdr:` source tags, `herdr.dev` and `herdrdev/` are left alone.
+macro_rules! eprintln {
+    () => {{
+        std::eprintln!();
+    }};
+    ($($arg:tt)*) => {{
+        std::eprintln!("{}", crate::cli::command_name_text(&format!($($arg)*)));
+    }};
+}
+
+pub(crate) fn command_name_text(text: &str) -> std::borrow::Cow<'_, str> {
+    let name = crate::build_info::COMMAND_NAME;
+    if name == "herdr" || !text.contains("herdr ") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("herdr ") {
+        let starts_word = at == 0
+            || !rest[..at].chars().next_back().is_some_and(|c| {
+                c.is_alphanumeric() || c == '_' || c == '-' || c == '/' || c == '.'
+            });
+        out.push_str(&rest[..at]);
+        out.push_str(if starts_word { name } else { "herdr" });
+        out.push(' ');
+        rest = &rest[at + "herdr ".len()..];
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 mod agent;
 mod api;
 mod completion;
@@ -1526,6 +1561,46 @@ fn session_imported(args: &[String]) -> std::io::Result<i32> {
 
 fn _print_json<T: Serialize>(value: &T) {
     println!("{}", serde_json::to_string(value).unwrap());
+}
+
+#[cfg(test)]
+mod command_name_text_tests {
+    use super::command_name_text;
+
+    #[test]
+    fn a_usage_line_names_the_binary_that_is_running() {
+        let name = crate::build_info::COMMAND_NAME;
+        assert_eq!(
+            command_name_text("usage: herdr workspace close <workspace_id>"),
+            format!("usage: {name} workspace close <workspace_id>")
+        );
+        assert_eq!(
+            command_name_text("run `herdr session attach work` again"),
+            format!("run `{name} session attach work` again")
+        );
+        assert_eq!(
+            command_name_text("herdr plugin commands:"),
+            format!("{name} plugin commands:")
+        );
+    }
+
+    #[test]
+    fn data_and_upstream_names_are_left_alone() {
+        for text in [
+            "source herdr:claude",
+            "see https://herdr.dev/docs",
+            "github.com/herdrdev/herdr issues",
+            "upstream-herdr binary",
+            "no herdr here",
+        ] {
+            let expected = if text == "no herdr here" {
+                format!("no {} here", crate::build_info::COMMAND_NAME)
+            } else {
+                text.to_string()
+            };
+            assert_eq!(command_name_text(text), expected, "{text}");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -644,9 +644,10 @@ fn config_check_rejects_json_output() {
 
     assert_eq!(checked.status.code(), Some(2));
     assert!(checked.stdout.is_empty());
+    // Usage lines name the binary that is running.
     assert_eq!(
         String::from_utf8_lossy(&checked.stderr),
-        "usage: herdr config check\n"
+        format!("usage: {} config check\n", env!("CARGO_PKG_NAME"))
     );
 
     cleanup_test_base(&base);
