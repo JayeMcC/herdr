@@ -733,12 +733,8 @@ mod tests {
     fn shell_command_invocation_executes_endpoint_owned_definition() {
         let mut app = test_app();
         let path = std::path::PathBuf::from(format!(
-            "/var/tmp/herdr-command-invoke-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "/var/tmp/herdr-command-invoke-{}",
+            crate::test_env::unique_token()
         ));
         let _ = std::fs::remove_file(&path);
         let mut command = binding(crate::config::CustomCommandAction::Shell);

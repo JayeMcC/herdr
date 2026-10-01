@@ -352,12 +352,8 @@ fn startup_onboarding_is_client_rendered_and_modal() {
 #[test]
 fn onboarding_completion_persists_and_opens_endpoint_integrations() {
     let path = std::env::temp_dir().join(format!(
-        "herdr-client-onboarding-{}-{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
+        "herdr-client-onboarding-{}.toml",
+        crate::test_env::unique_token()
     ));
     std::fs::write(&path, "[terminal]\ndefault_shell = \"fish\"\n")
         .expect("write onboarding config");
@@ -459,12 +455,8 @@ fn unavailable_integration_list_does_not_wedge_settings() {
     let mut config =
         ClientShellConfig::from_config(&Config::default()).with_startup_onboarding(true);
     config.local_config_path = std::env::temp_dir().join(format!(
-        "herdr-client-onboarding-unavailable-{}-{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
+        "herdr-client-onboarding-unavailable-{}.toml",
+        crate::test_env::unique_token()
     ));
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(snapshot()));

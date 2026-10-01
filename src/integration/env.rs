@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 #[cfg(test)]
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::MutexGuard;
 
 use portable_pty::CommandBuilder;
 
@@ -289,10 +289,12 @@ impl Drop for IntegrationEnvLock {
 
 #[cfg(test)]
 pub(crate) fn integration_env_lock() -> IntegrationEnvLock {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    // Delegates to the ONE crate-wide env mutex, so these tests serialise
+    // against every other module that mutates the process environment --
+    // not merely against each other. Poison is recovered rather than
+    // propagated: one panicking test must not fail every later one.
     IntegrationEnvLock {
-        _guard: guard,
+        _guard: crate::test_env::env_lock(),
         #[cfg(windows)]
         appdata: std::env::var_os("APPDATA"),
     }

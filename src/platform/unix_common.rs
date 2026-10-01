@@ -230,11 +230,37 @@ fn set_sigpipe_disposition(handler: libc::sighandler_t) {
     }
 }
 
+/// SIGPIPE disposition is process-global, so flipping it to `SIG_DFL` is only
+/// ever correct for the real `herdr` binary, where dying on a closed pipe is
+/// the expected `herdr ... | head` behavior. A test harness runs thousands of
+/// unrelated tests in ONE process: a single `begin_cli_output` call there
+/// re-arms `SIG_DFL` for every later test, and the next write to any closed
+/// pipe kills the whole run mid-suite — which reads as a mass test failure
+/// rather than as the signal death it is. `main` opts the process in; nothing
+/// else does, so under `cargo test` the disposition stays at Rust's `SIG_IGN`
+/// and closed-pipe writes return `EPIPE` to the caller as normal.
+static CLI_SIGNAL_BEHAVIOR_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn enable_cli_signal_behavior() {
+    CLI_SIGNAL_BEHAVIOR_ENABLED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+fn cli_signal_behavior_enabled() -> bool {
+    CLI_SIGNAL_BEHAVIOR_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+}
+
 pub(crate) fn begin_cli_output() {
+    if !cli_signal_behavior_enabled() {
+        return;
+    }
     set_sigpipe_disposition(libc::SIG_DFL);
 }
 
 pub(crate) fn end_cli_output() {
+    if !cli_signal_behavior_enabled() {
+        return;
+    }
     set_sigpipe_disposition(libc::SIG_IGN);
 }
 
@@ -473,5 +499,68 @@ mod tests {
     fn remote_ssh_config_dir_rejects_overlong_control_socket_name() {
         let err = create_remote_ssh_config_dir(&"x".repeat(200)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(test)]
+mod cli_signal_behavior_tests {
+    use super::*;
+
+    fn current_sigpipe_handler() -> libc::sighandler_t {
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::sigaction(libc::SIGPIPE, std::ptr::null(), &mut action);
+        }
+        action.sa_sigaction
+    }
+
+    /// The whole point of the opt-in. A test process never calls
+    /// `enable_cli_signal_behavior`, so no amount of CLI output plumbing may
+    /// leave SIGPIPE at `SIG_DFL` — if it does, a later closed-pipe write
+    /// kills the entire suite mid-run and every unreached test reads as
+    /// "did not fail" rather than "never ran".
+    #[test]
+    fn cli_output_helpers_do_not_arm_sigpipe_death_under_test() {
+        assert!(
+            !cli_signal_behavior_enabled(),
+            "the test harness must never opt into CLI signal behavior"
+        );
+
+        begin_cli_output();
+        assert_eq!(
+            current_sigpipe_handler(),
+            libc::SIG_IGN,
+            "begin_cli_output armed SIG_DFL inside the test process; a closed-pipe \
+             write will now kill the whole suite"
+        );
+
+        end_cli_output();
+        assert_eq!(current_sigpipe_handler(), libc::SIG_IGN);
+    }
+
+    /// A closed-pipe write must return `EPIPE` to the caller rather than
+    /// killing the process. This is the failure the suite actually suffered:
+    /// death by signal 13 partway through, which no test-level assertion can
+    /// catch because there is no surviving process to report it.
+    #[test]
+    fn writing_to_a_closed_pipe_returns_epipe_instead_of_killing_the_process() {
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let [read_fd, write_fd] = fds;
+        assert_eq!(unsafe { libc::close(read_fd) }, 0);
+
+        begin_cli_output();
+        let payload = b"herdr";
+        let written =
+            unsafe { libc::write(write_fd, payload.as_ptr().cast(), payload.len()) };
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!(unsafe { libc::close(write_fd) }, 0);
+
+        assert_eq!(written, -1, "write to a closed pipe should fail");
+        assert_eq!(
+            errno,
+            Some(libc::EPIPE),
+            "expected EPIPE; reaching this line at all proves the process survived"
+        );
     }
 }

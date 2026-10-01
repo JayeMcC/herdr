@@ -529,11 +529,9 @@ mod tests {
     use super::*;
 
     fn unique_temp_path(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
+        crate::test_env::unique_temp_path(&format!("herdr-{name}"))
     }
 
     fn run_git(repo: &Path, args: &[&str]) {

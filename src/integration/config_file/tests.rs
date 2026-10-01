@@ -5,12 +5,8 @@ struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "herdr-config-write-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-config-write-{}",
+            crate::test_env::unique_token()
         ));
         fs::create_dir(&path).unwrap();
         Self(path)

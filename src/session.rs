@@ -497,20 +497,20 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use interprocess::local_socket::traits::Listener as _;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        // Delegates to the ONE crate-wide env mutex. A module-private lock
+        // here would serialise only this module's tests while a sibling
+        // module mutated the same process-global variables concurrently.
+        crate::test_env::env_mutex()
     }
 
     #[cfg(unix)]
     fn unique_test_path(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+        // A per-process counter, not a nanosecond clock: two concurrent
+        // tests can read the same nanosecond and collide on the path.
+        crate::test_env::unique_temp_path(&format!("herdr-{name}"))
     }
 
     #[cfg(unix)]

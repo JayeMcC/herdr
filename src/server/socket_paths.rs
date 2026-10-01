@@ -104,6 +104,9 @@ mod tests {
 
     #[test]
     fn client_socket_path_defaults_to_config_dir() {
+        // Both REMOVES a process-global variable and resolves config_dir()
+        // from the environment, so it needs the shared env lock.
+        let _guard = crate::test_env::env_lock();
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
         crate::session::clear_explicit_session_for_test();
         let path = client_socket_path_from_overrides(None, None);
@@ -123,12 +126,8 @@ mod tests {
     #[test]
     fn prepare_socket_path_removes_stale_socket() {
         let dir = PathBuf::from(format!(
-            "/tmp/hs-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+            "/tmp/hs-{}",
+            crate::test_env::unique_token()
         ));
         let _ = fs::create_dir_all(&dir);
         let socket_path = dir.join("stale.sock");
@@ -155,12 +154,8 @@ mod tests {
     #[test]
     fn prepare_socket_path_rejects_live_socket() {
         let dir = PathBuf::from(format!(
-            "/tmp/hl-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+            "/tmp/hl-{}",
+            crate::test_env::unique_token()
         ));
         let _ = fs::create_dir_all(&dir);
         let socket_path = dir.join("live.sock");

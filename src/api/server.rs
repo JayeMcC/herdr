@@ -961,12 +961,14 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
     use tokio::sync::mpsc;
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        // Delegates to the ONE crate-wide env mutex. A module-private lock
+        // here would serialise only this module's tests while a sibling
+        // module mutated the same process-global variables concurrently.
+        crate::test_env::env_mutex()
     }
 
     fn unique_test_path(name: &str) -> PathBuf {

@@ -1,10 +1,10 @@
 use super::*;
 use std::ffi::OsString;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    // Delegates to the ONE crate-wide env mutex; see crate::test_env.
+    crate::test_env::env_mutex()
 }
 
 #[test]
@@ -676,12 +676,8 @@ fn sound_from_notify_message_rejects_unknown_payloads() {
 fn reload_local_client_config_refreshes_local_client_presentation_state() {
     let _guard = crate::config::test_config_env_lock().lock().unwrap();
     let path = std::env::temp_dir().join(format!(
-        "herdr-client-config-reload-{}-{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        "herdr-client-config-reload-{}.toml",
+        crate::test_env::unique_token()
     ));
     std::fs::write(
         &path,
@@ -714,12 +710,8 @@ fn reload_local_client_config_refreshes_local_client_presentation_state() {
 fn reload_local_client_config_keeps_ui_preferences_when_ui_is_invalid() {
     let _guard = crate::config::test_config_env_lock().lock().unwrap();
     let path = std::env::temp_dir().join(format!(
-        "herdr-client-invalid-ui-reload-{}-{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        "herdr-client-invalid-ui-reload-{}.toml",
+        crate::test_env::unique_token()
     ));
     std::fs::write(&path, "[ui]\nmouse_capture = \"invalid\"\n").unwrap();
     let path_string = path.to_string_lossy().to_string();

@@ -230,12 +230,8 @@ mod tests {
 
     fn unique_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "herdr-opencode-config-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
+            "herdr-opencode-config-{}",
+            crate::test_env::unique_token()
         ));
         fs::create_dir_all(&dir).expect("temporary config directory should be created");
         dir

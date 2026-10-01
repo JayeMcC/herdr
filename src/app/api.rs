@@ -1800,12 +1800,8 @@ mod tests {
         let root = workspace.tabs[0].root_pane;
         let terminal_id = workspace.terminal_id(root).cloned().unwrap();
         let temp_root = std::env::temp_dir().join(format!(
-            "herdr-toast-context-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-toast-context-{}",
+            crate::test_env::unique_token()
         ));
         let stale_cwd = temp_root.join("__herdr_original__");
         let live_cwd = temp_root.join("__herdr_projects__");
@@ -1893,12 +1889,8 @@ mod tests {
         let root = workspace.tabs[0].root_pane;
         let terminal_id = workspace.terminal_id(root).cloned().unwrap();
         let temp_root = std::env::temp_dir().join(format!(
-            "herdr-delayed-toast-context-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-delayed-toast-context-{}",
+            crate::test_env::unique_token()
         ));
         let stale_cwd = temp_root.join("__herdr_original__");
         let live_cwd = temp_root.join("__herdr_projects__");

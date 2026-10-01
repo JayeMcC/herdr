@@ -4941,8 +4941,8 @@ mod tests {
 
     #[cfg(unix)]
     fn remote_env_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        // Delegates to the ONE crate-wide env mutex; see crate::test_env.
+        crate::test_env::env_mutex()
     }
 
     #[cfg(unix)]

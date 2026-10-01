@@ -181,12 +181,8 @@ fn assert_kimi_hook(
 fn unique_base() -> PathBuf {
     clear_integration_path_env();
     std::env::temp_dir().join(format!(
-        "herdr-integration-install-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        "herdr-integration-install-test-{}",
+        crate::test_env::unique_token()
     ))
 }
 

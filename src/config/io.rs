@@ -828,6 +828,11 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_uses_compact_actionable_banner() {
+        // Asserts on the config FILE NAME, which config_diagnostic_summary
+        // derives from config_path() -> HERDR_CONFIG_PATH. Without the env
+        // lock this reads whatever a concurrent test installed and the
+        // expected "config.toml" becomes that test's temp file name.
+        let _guard = crate::test_env::env_lock();
         let diagnostics = vec![
             "one".to_string(),
             "two".to_string(),
@@ -844,6 +849,11 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_unknown_keys_compactly() {
+        // Asserts on the config FILE NAME, which config_diagnostic_summary
+        // derives from config_path() -> HERDR_CONFIG_PATH. Without the env
+        // lock this reads whatever a concurrent test installed and the
+        // expected "config.toml" becomes that test's temp file name.
+        let _guard = crate::test_env::env_lock();
         let diagnostics = vec![
             "unknown config key ui.mouse_captur; ignoring key".to_string(),
             "unknown config key keys.new_tabb; ignoring key".to_string(),
@@ -857,6 +867,11 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_keeps_mixed_diagnostics_generic() {
+        // Asserts on the config FILE NAME, which config_diagnostic_summary
+        // derives from config_path() -> HERDR_CONFIG_PATH. Without the env
+        // lock this reads whatever a concurrent test installed and the
+        // expected "config.toml" becomes that test's temp file name.
+        let _guard = crate::test_env::env_lock();
         let diagnostics = vec![
             "invalid ui config: invalid type: string; keeping current ui settings".to_string(),
             "unknown config key keys.new_tabb; ignoring key".to_string(),
@@ -870,6 +885,11 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_default_fallback() {
+        // Asserts on the config FILE NAME, which config_diagnostic_summary
+        // derives from config_path() -> HERDR_CONFIG_PATH. Without the env
+        // lock this reads whatever a concurrent test installed and the
+        // expected "config.toml" becomes that test's temp file name.
+        let _guard = crate::test_env::env_lock();
         let diagnostics = vec![
             "config parse error: TOML parse error at line 33, column 8\n   |\n33 | type = \"popup\"\n   |        ^^^^^^^\nunknown variant `popup`; using defaults"
                 .to_string(),
@@ -883,6 +903,11 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_unreadable_config_impact() {
+        // Asserts on the config FILE NAME, which config_diagnostic_summary
+        // derives from config_path() -> HERDR_CONFIG_PATH. Without the env
+        // lock this reads whatever a concurrent test installed and the
+        // expected "config.toml" becomes that test's temp file name.
+        let _guard = crate::test_env::env_lock();
         let startup = vec!["config read error: permission denied; using defaults".to_string()];
         assert_eq!(
             config_diagnostic_summary(&startup).as_deref(),
@@ -899,6 +924,11 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_retained_live_config() {
+        // Asserts on the config FILE NAME, which config_diagnostic_summary
+        // derives from config_path() -> HERDR_CONFIG_PATH. Without the env
+        // lock this reads whatever a concurrent test installed and the
+        // expected "config.toml" becomes that test's temp file name.
+        let _guard = crate::test_env::env_lock();
         let diagnostics = vec![
             "config parse error: TOML parse error at line 7, column 4; keeping current config"
                 .to_string(),

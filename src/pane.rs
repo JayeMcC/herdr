@@ -3747,12 +3747,8 @@ mod tests {
             })
             .unwrap();
         let output_path = std::env::temp_dir().join(format!(
-            "herdr-pane-term-test-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-pane-term-test-{}.txt",
+            crate::test_env::unique_token()
         ));
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.arg("-c");
@@ -4118,12 +4114,8 @@ mod tests {
     fn login_shell_builder_resolves_bare_shell_names_from_path() {
         let _lock = crate::integration::integration_env_lock();
         let base = std::env::temp_dir().join(format!(
-            "herdr-login-shell-path-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "herdr-login-shell-path-{}",
+            crate::test_env::unique_token()
         ));
         let bin = base.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
