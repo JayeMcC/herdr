@@ -248,24 +248,25 @@ impl App {
         super::env::ensure_plugin_user_dirs(plugin)
             .map_err(|err| ("plugin_user_dir_create_failed".to_string(), err.to_string()))?;
         env.retain(|(key, _)| !plugin_pane_protected_env_key(key));
-        env.extend(super::env::plugin_path_env(plugin));
-        env.push((
+        let mut own = super::env::plugin_path_env(plugin);
+        own.push((
             crate::api::SOCKET_PATH_ENV_VAR.to_string(),
             crate::api::socket_path().display().to_string(),
         ));
-        env.push(("HERDR_ENV".to_string(), "1".to_string()));
-        env.push(("HERDR_PLUGIN_ID".to_string(), plugin.plugin_id.clone()));
-        env.push((
+        own.push(("HERDR_ENV".to_string(), "1".to_string()));
+        own.push(("HERDR_PLUGIN_ID".to_string(), plugin.plugin_id.clone()));
+        own.push((
             "HERDR_PLUGIN_ENTRYPOINT_ID".to_string(),
             entrypoint.to_string(),
         ));
-        env.push(("HERDR_PLUGIN_CONTEXT_JSON".to_string(), context_json));
+        own.push(("HERDR_PLUGIN_CONTEXT_JSON".to_string(), context_json));
         if let Ok(current_exe) = crate::platform::launch_executable() {
-            env.push((
+            own.push((
                 "HERDR_BIN_PATH".to_string(),
                 current_exe.display().to_string(),
             ));
         }
+        env.extend(super::env::with_twodr_names(own));
         Ok(env)
     }
 
@@ -344,8 +345,16 @@ impl App {
 }
 
 fn plugin_pane_protected_env_key(key: &str) -> bool {
+    // Both spellings are protected: a caller must not spoof either one.
+    if key == crate::api::SOCKET_PATH_ENV_VAR {
+        return true;
+    }
+    let key = match key.strip_prefix("TWODR_") {
+        Some(rest) => format!("HERDR_{rest}"),
+        None => key.to_string(),
+    };
     matches!(
-        key,
+        key.as_str(),
         crate::api::SOCKET_PATH_ENV_VAR
             | "HERDR_ENV"
             | "HERDR_PLUGIN_ID"

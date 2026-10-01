@@ -1300,7 +1300,7 @@ fn ensure_manifest_unchanged_after_build(
         return Ok(());
     }
     Err(io::Error::other(
-        "plugin build changed herdr-plugin.toml after install preview; aborting install",
+        "plugin build changed the plugin manifest after install preview; aborting install",
     ))
 }
 
@@ -1518,11 +1518,17 @@ fn scrub_herdr_runtime_env(command: &mut Command) {
         "HERDR_WORKSPACE_ID",
         "HERDR_TAB_ID",
         "HERDR_PANE_ID",
+        "TWODR_BIN_PATH",
+        "TWODR_ENV",
+        "TWODR_WORKSPACE_ID",
+        "TWODR_TAB_ID",
+        "TWODR_PANE_ID",
     ] {
         command.env_remove(key);
     }
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("HERDR_PLUGIN_") {
+        let key_text = key.to_string_lossy();
+        if key_text.starts_with("HERDR_PLUGIN_") || key_text.starts_with("TWODR_PLUGIN_") {
             command.env_remove(key);
         }
     }

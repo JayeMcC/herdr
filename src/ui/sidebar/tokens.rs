@@ -42,7 +42,7 @@ impl ResolvedTokenKind {
 }
 
 impl ResolvedToken {
-    fn new(kind: ResolvedTokenKind, style: SidebarTokenStyle) -> Self {
+    pub(crate) fn new(kind: ResolvedTokenKind, style: SidebarTokenStyle) -> Self {
         Self { kind, style }
     }
 

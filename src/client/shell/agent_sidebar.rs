@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     buffer::Buffer,
@@ -18,6 +18,25 @@ pub(super) struct AgentRow {
     /// Nesting depth in tree mode; 0 in every other mode, so the existing
     /// modes render exactly as they did before.
     pub(super) depth: usize,
+    /// Space heading drawn on its own line above this row (tree mode only).
+    pub(super) heading: Option<String>,
+    /// Tree mode, a row with children: its collapse key, whether it is
+    /// collapsed, and how many rows the collapse hides.
+    pub(super) toggle: Option<AgentRowToggle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AgentRowToggle {
+    pub(super) key: String,
+    pub(super) collapsed: bool,
+    pub(super) hidden: usize,
+}
+
+impl AgentRow {
+    /// Lines this row occupies, its heading included.
+    pub(super) fn line_count(&self) -> usize {
+        self.rows.len().max(1) + usize::from(self.heading.is_some())
+    }
 }
 
 /// One row of the agent panel in tree order: the pane to render and how deep it
@@ -26,6 +45,9 @@ pub(super) struct AgentRow {
 pub(super) struct AgentTreeRow {
     pub(super) pane_id: String,
     pub(super) depth: usize,
+    /// The space heading shown above this row: set on the first row of each
+    /// space group, `None` on every other row.
+    pub(super) heading: Option<String>,
 }
 
 /// The name a tree row sorts under, and the one a child names as its parent.
@@ -116,6 +138,7 @@ fn tree_ordered_rows(agents: &[&crate::protocol::ClientShellAgent]) -> Vec<Agent
         rows.push(AgentTreeRow {
             pane_id: agents[index].pane_id.clone(),
             depth,
+            heading: None,
         });
         if let Some(kids) = children.get(&index) {
             for child in kids.iter().rev() {
@@ -133,9 +156,137 @@ fn tree_ordered_rows(agents: &[&crate::protocol::ClientShellAgent]) -> Vec<Agent
     rows.extend(stranded.into_iter().map(|index| AgentTreeRow {
         pane_id: agents[index].pane_id.clone(),
         depth: 0,
+        heading: None,
     }));
 
     rows
+}
+
+/// The fleet's tier spaces, in the order the operator reads them.
+const TIER_SPACES: [&str; 4] = ["assistant", "infra", "meta", "work"];
+/// Heading for agents whose space is not in the snapshot.
+const UNPLACED_SPACE: &str = "other";
+
+/// The space an agent is grouped under: the top-level part of its space's
+/// label, so an agent in `work/o-dev-5068` groups under `work`.
+fn top_level_space<'a>(snapshot: &'a ClientShellSnapshot, workspace_id: &str) -> &'a str {
+    snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == workspace_id)
+        .map(|workspace| {
+            workspace
+                .label
+                .split_once('/')
+                .map_or(workspace.label.as_str(), |(parent, _)| parent)
+        })
+        .filter(|label| !label.is_empty())
+        .unwrap_or(UNPLACED_SPACE)
+}
+
+/// Tree mode: agents grouped by space first (tier spaces in tier order, then
+/// any other space alphabetically, then agents with no known space), each
+/// group the same parent forest `tree_ordered_rows` builds.
+///
+/// A subtree is placed by its ROOT's space, so a worker always renders under
+/// its orchestrator even when its tab sits in a different space — splitting a
+/// worker away from the agent that spawned it is exactly what the tree exists
+/// to prevent. Grouping only reorders whole subtrees, so every agent still
+/// appears exactly once.
+pub(super) fn space_grouped_tree_rows(snapshot: &ClientShellSnapshot) -> Vec<AgentTreeRow> {
+    let forest = tree_ordered_rows(&snapshot.agents.iter().collect::<Vec<_>>());
+    let space_of = |pane_id: &str| {
+        snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .map_or(UNPLACED_SPACE, |agent| {
+                top_level_space(snapshot, &agent.workspace_id)
+            })
+    };
+    let mut subtrees: Vec<(&str, Vec<AgentTreeRow>)> = Vec::new();
+    for row in forest {
+        if row.depth == 0 || subtrees.is_empty() {
+            subtrees.push((space_of(&row.pane_id), vec![row]));
+        } else if let Some((_, subtree)) = subtrees.last_mut() {
+            subtree.push(row);
+        }
+    }
+    let rank = |space: &str| match TIER_SPACES.iter().position(|tier| *tier == space) {
+        Some(position) => (0, position, String::new()),
+        None if space == UNPLACED_SPACE => (2, 0, String::new()),
+        None => (1, 0, space.to_lowercase()),
+    };
+    // Stable: subtrees keep their alphabetical order within a space.
+    subtrees.sort_by_key(|(space, _)| rank(space));
+    let mut rows = Vec::with_capacity(snapshot.agents.len());
+    let mut previous: Option<&str> = None;
+    for (space, subtree) in subtrees {
+        for (index, mut row) in subtree.into_iter().enumerate() {
+            if index == 0 && previous != Some(space) {
+                row.heading = Some(space.to_string());
+            }
+            rows.push(row);
+        }
+        previous = Some(space);
+    }
+    rows
+}
+
+/// Collapse key for an agent's subtree. Namespaced so it can share the
+/// persisted collapse set with the spaces panel without colliding with a
+/// space-group (`space:`) or worktree (repository path) key. Held by the
+/// agent's NAME, like `parent_agent`, because pane and terminal ids do not
+/// survive a restart and a collapse should.
+pub(super) const AGENT_COLLAPSE_PREFIX: &str = "agent:";
+
+pub(super) fn agent_collapse_key(name: &str) -> String {
+    format!("{AGENT_COLLAPSE_PREFIX}{name}")
+}
+
+/// Hide the descendants of every collapsed agent. Returns the visible rows and,
+/// for each collapsed agent that actually hid something, how many rows it hid
+/// (keyed by pane id), so its row can say so. Rows are in tree order, so a
+/// subtree is the run of deeper rows that follows its root. A space heading
+/// never disappears: one on a hidden row moves to the next visible row.
+pub(super) fn collapse_tree_rows(
+    rows: Vec<AgentTreeRow>,
+    collapsed: &HashSet<String>,
+    name_of: impl Fn(&str) -> Option<String>,
+) -> (Vec<AgentTreeRow>, HashMap<String, usize>) {
+    let mut out: Vec<AgentTreeRow> = Vec::with_capacity(rows.len());
+    let mut hidden = HashMap::<String, usize>::new();
+    let mut hiding: Option<(String, usize)> = None;
+    let mut pending_heading: Option<String> = None;
+    for mut row in rows {
+        if let Some((root, depth)) = hiding.as_ref() {
+            if row.depth > *depth {
+                *hidden.entry(root.clone()).or_default() += 1;
+                if let Some(heading) = row.heading.take() {
+                    pending_heading.get_or_insert(heading);
+                }
+                continue;
+            }
+            hiding = None;
+        }
+        if let Some(heading) = pending_heading.take() {
+            row.heading.get_or_insert(heading);
+        }
+        if name_of(&row.pane_id).is_some_and(|name| collapsed.contains(&agent_collapse_key(&name)))
+        {
+            hiding = Some((row.pane_id.clone(), row.depth));
+        }
+        out.push(row);
+    }
+    (out, hidden)
+}
+
+fn agent_name(snapshot: &ClientShellSnapshot, pane_id: &str) -> Option<String> {
+    snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == pane_id)
+        .and_then(|agent| agent.name.clone())
 }
 
 /// Tree rows for the panel, or `None` when the active sort is not the tree.
@@ -146,14 +297,22 @@ pub(super) fn agent_tree_rows(
     if snapshot.agent_view_label.is_some() || sort != crate::config::AgentPanelSortConfig::Tree {
         return None;
     }
-    Some(tree_ordered_rows(
-        &snapshot.agents.iter().collect::<Vec<_>>(),
-    ))
+    Some(space_grouped_tree_rows(snapshot))
 }
 
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
+) -> Vec<String> {
+    visible_agent_pane_ids(snapshot, sort, &HashSet::new())
+}
+
+/// The agents in panel order, minus those inside a collapsed subtree, so
+/// keyboard navigation moves through exactly the rows the panel shows.
+pub(super) fn visible_agent_pane_ids(
+    snapshot: &ClientShellSnapshot,
+    sort: crate::config::AgentPanelSortConfig,
+    collapsed: &HashSet<String>,
 ) -> Vec<String> {
     if snapshot.agent_view_label.is_some() {
         return snapshot
@@ -172,6 +331,7 @@ pub(super) fn ordered_agent_pane_ids(
         // Navigation reads the same order it renders: if the panel shows a
         // child under its parent, ctrl-n must move there and not to whatever
         // the unsorted snapshot happened to list next.
+        let (rows, _) = collapse_tree_rows(rows, collapsed, |pane| agent_name(snapshot, pane));
         return rows.into_iter().map(|row| row.pane_id).collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
@@ -194,6 +354,7 @@ pub(super) fn render_agent_panel(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    collapsed: &HashSet<String>,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -207,7 +368,10 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let mut rows = collapsible_agent_rows(snapshot, config, None, collapsed);
+    for row in &mut rows {
+        row.keep_full_tab_label(area.width);
+    }
     render_agent_list(
         buffer,
         area,
@@ -219,10 +383,44 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
+        AgentRow::line_count,
         |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
+            // The heading line is a label, not the agent: clicking it must not
+            // focus the first agent under it.
+            let heading_lines = u16::from(row.heading.is_some()).min(rect.height);
+            let body = Rect::new(
+                rect.x,
+                rect.y + heading_lines,
+                rect.width,
+                rect.height - heading_lines,
+            );
             render_agent_row(buffer, rect, row, config);
+            // The toggle sits on the agent's first line, at the right edge,
+            // where the spaces panel puts its group toggle. It is registered
+            // BEFORE the row so a click on it collapses instead of focusing.
+            if let Some(toggle) = row
+                .toggle
+                .as_ref()
+                .filter(|_| body.height > 0 && body.width > 0)
+            {
+                let glyph = if toggle.collapsed {
+                    format!("▸{}", toggle.hidden)
+                } else {
+                    "▾".to_string()
+                };
+                let width = (display_width(&glyph) as u16).min(body.width);
+                let toggle_rect = Rect::new(body.right().saturating_sub(width), body.y, width, 1);
+                put_text(
+                    buffer,
+                    toggle_rect.x,
+                    toggle_rect.y,
+                    toggle_rect.width,
+                    &glyph,
+                    Style::default().fg(config.palette.accent),
+                );
+                hits.agent_toggles.push((toggle_rect, toggle.key.clone()));
+            }
+            hits.agents.push((body, row.pane_id.clone()));
         },
     );
 }
@@ -376,17 +574,37 @@ pub(super) fn render_agent_list<T>(
     }
 }
 
-pub(super) fn agent_rows(
+/// The panel's rows, with the tree's collapsed subtrees hidden. Only tree mode
+/// has subtrees; every other mode ignores `collapsed`.
+pub(super) fn collapsible_agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     machine: Option<&str>,
+    collapsed: &HashSet<String>,
 ) -> Vec<AgentRow> {
     if let Some(tree) = agent_tree_rows(snapshot, config.agent_panel_sort) {
+        let has_children = tree
+            .windows(2)
+            .filter(|pair| pair[1].depth > pair[0].depth)
+            .map(|pair| pair[0].pane_id.clone())
+            .collect::<HashSet<_>>();
+        let (tree, hidden) = collapse_tree_rows(tree, collapsed, |pane| agent_name(snapshot, pane));
         return tree
             .into_iter()
             .filter_map(|row| {
                 let mut built = agent_row(snapshot, &row.pane_id, config, machine)?;
                 built.depth = row.depth;
+                built.heading = row.heading;
+                if has_children.contains(&row.pane_id) {
+                    if let Some(name) = agent_name(snapshot, &row.pane_id) {
+                        let key = agent_collapse_key(&name);
+                        built.toggle = Some(AgentRowToggle {
+                            collapsed: collapsed.contains(&key),
+                            hidden: hidden.get(&row.pane_id).copied().unwrap_or(0),
+                            key,
+                        });
+                    }
+                }
                 Some(built)
             })
             .collect();
@@ -468,7 +686,128 @@ pub(super) fn agent_row(
         focused: agent.focused,
         rows,
         depth: 0,
+        heading: None,
+        toggle: None,
     })
+}
+
+/// Keep a tab label whole (operator 2026-09-29: a tab using a stack is labelled
+/// `<lane> · <stack>`, and the panel must show all of it).
+///
+/// The shared token fitter shrinks or drops a label that does not fit, which on
+/// a 26-column sidebar cuts the stack name off — the one part the operator
+/// asked to see. So when a row's tab label is wider than the row allows, the
+/// label leaves that row and is wrapped onto lines of its own, breaking at
+/// ` · ` first so the stack reads as one unit, and mid-word only when a single
+/// part is wider than a whole line. The rest of the row is left exactly as it
+/// was, and a label that fits is not touched.
+pub(super) fn fit_full_tab_label(
+    rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    width: usize,
+) -> Vec<Vec<crate::ui::ResolvedToken>> {
+    use crate::ui::{ResolvedToken, ResolvedTokenKind};
+    let width = width.max(1);
+    let fits = |row: &[ResolvedToken], width: usize| {
+        let mut total = 0;
+        for (index, token) in row.iter().enumerate() {
+            if index > 0 {
+                total += display_width(crate::ui::token_separator(&row[index - 1], token));
+            }
+            total += match &token.kind {
+                ResolvedTokenKind::StateIcon => 1,
+                ResolvedTokenKind::StateText(text)
+                | ResolvedTokenKind::Machine(text)
+                | ResolvedTokenKind::Workspace(text)
+                | ResolvedTokenKind::Tab(text)
+                | ResolvedTokenKind::Pane(text)
+                | ResolvedTokenKind::Agent(text)
+                | ResolvedTokenKind::TerminalTitle(text)
+                | ResolvedTokenKind::Branch(text)
+                | ResolvedTokenKind::Custom(text) => display_width(text),
+                ResolvedTokenKind::GitStatus { .. } => 0,
+            };
+        }
+        total <= width
+    };
+    // Only the first line of a row gets `width`; every later line is indented
+    // two more columns by `render_agent_row`.
+    let continuation = width.saturating_sub(2).max(1);
+    let mut out: Vec<Vec<ResolvedToken>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let line_width = if out.is_empty() { width } else { continuation };
+        let Some(tab_index) = row
+            .iter()
+            .position(|token| matches!(token.kind, ResolvedTokenKind::Tab(_)))
+        else {
+            out.push(row);
+            continue;
+        };
+        if fits(&row, line_width) {
+            out.push(row);
+            continue;
+        }
+        let mut row = row;
+        let tab = row.remove(tab_index);
+        let ResolvedTokenKind::Tab(label) = &tab.kind else {
+            out.push(row);
+            continue;
+        };
+        if !row.is_empty() {
+            out.push(row);
+        }
+        for line in wrap_label(label, continuation) {
+            out.push(vec![ResolvedToken::new(
+                ResolvedTokenKind::Tab(line),
+                tab.style,
+            )]);
+        }
+    }
+    out
+}
+
+impl AgentRow {
+    /// Apply `fit_full_tab_label` at the width this row's FIRST line renders
+    /// in: the panel width less the first-line indent (`depth_indent + 1`,
+    /// the arithmetic `render_agent_row` uses). Continuation lines indent two
+    /// more columns, so they get that much less.
+    pub(super) fn keep_full_tab_label(&mut self, panel_width: u16) {
+        let depth_indent = (self.depth * 2).min(panel_width.saturating_sub(8) as usize);
+        let width = (panel_width as usize).saturating_sub(depth_indent + 1);
+        self.rows = fit_full_tab_label(std::mem::take(&mut self.rows), width);
+    }
+}
+
+/// Wrap at ` · ` boundaries, then by display width for any part still too wide.
+fn wrap_label(label: &str, width: usize) -> Vec<String> {
+    let mut parts = label.split(" · ");
+    let mut lines = Vec::new();
+    let mut current = parts.next().unwrap_or_default().to_string();
+    for part in parts {
+        let joined = format!("{current} · {part}");
+        if display_width(&joined) <= width {
+            current = joined;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = format!("· {part}");
+        }
+    }
+    lines.push(current);
+    lines
+        .into_iter()
+        .flat_map(|line| {
+            let mut chunks = Vec::new();
+            let mut chunk = String::new();
+            for character in line.chars() {
+                let candidate = format!("{chunk}{character}");
+                if display_width(&candidate) > width && !chunk.is_empty() {
+                    chunks.push(std::mem::take(&mut chunk));
+                }
+                chunk.push(character);
+            }
+            chunks.push(chunk);
+            chunks
+        })
+        .collect()
 }
 
 pub(super) fn render_agent_row(
@@ -511,6 +850,20 @@ pub(super) fn render_agent_row(
     // is indented past the edge is a row you cannot read, which is the same
     // failure as hiding it.
     let depth_indent = (row.depth * 2).min(rect.width.saturating_sub(8) as usize);
+    let mut rect = rect;
+    if let Some(heading) = row.heading.as_deref().filter(|_| rect.height > 0) {
+        put_text(
+            buffer,
+            rect.x,
+            rect.y,
+            rect.width,
+            &format!(" {heading}"),
+            Style::default()
+                .fg(palette.overlay0)
+                .add_modifier(Modifier::BOLD | Modifier::DIM),
+        );
+        rect = Rect::new(rect.x, rect.y + 1, rect.width, rect.height - 1);
+    }
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = depth_indent + if index == 0 { 1 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
@@ -653,10 +1006,7 @@ mod tree_tests {
         let agents = [agent("orphan", Some("ghost")), agent("present", None)];
         let rows = order(&agents);
         assert_eq!(rows.len(), 2, "no agent may be dropped: {rows:?}");
-        assert_eq!(
-            shape(&rows),
-            vec![("pane-orphan", 0), ("pane-present", 0)]
-        );
+        assert_eq!(shape(&rows), vec![("pane-orphan", 0), ("pane-present", 0)]);
     }
 
     #[test]
@@ -676,7 +1026,10 @@ mod tree_tests {
             .map(|row| row.pane_id.as_str())
             .collect::<Vec<_>>();
         for expected in ["pane-a", "pane-b", "pane-free"] {
-            assert!(panes.contains(&expected), "{expected} missing from {panes:?}");
+            assert!(
+                panes.contains(&expected),
+                "{expected} missing from {panes:?}"
+            );
         }
     }
 
@@ -728,5 +1081,525 @@ mod tree_tests {
                 ("pane-l3", 3),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod space_tree_tests {
+    use super::{space_grouped_tree_rows, AgentTreeRow};
+    use crate::protocol::{ClientShellAgent, ClientShellSnapshot};
+
+    fn fleet(
+        spaces: &[(&str, &str)],
+        agents: &[(&str, &str, Option<&str>)],
+    ) -> ClientShellSnapshot {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        let template = snapshot.workspaces[0].clone();
+        snapshot.workspaces = spaces
+            .iter()
+            .map(|(id, label)| {
+                let mut workspace = template.clone();
+                workspace.workspace_id = (*id).into();
+                workspace.label = (*label).into();
+                workspace
+            })
+            .collect();
+        snapshot.agents = agents
+            .iter()
+            .map(|(name, workspace, parent)| ClientShellAgent {
+                pane_id: format!("pane-{name}"),
+                workspace_id: (*workspace).into(),
+                tab_id: "tab_1".into(),
+                name: Some((*name).into()),
+                parent_agent: parent.map(str::to_string),
+                display_agent: None,
+                agent: None,
+                title: None,
+                terminal_title: None,
+                terminal_title_stripped: None,
+                agent_status: crate::api::schema::AgentStatus::Idle,
+                state_change_seq: 0,
+                state_labels: Vec::new(),
+                tokens: Vec::new(),
+                focused: false,
+            })
+            .collect();
+        snapshot
+    }
+
+    /// (heading, pane, depth): the heading is shown above the row that carries it.
+    fn shape(rows: &[AgentTreeRow]) -> Vec<(Option<&str>, &str, usize)> {
+        rows.iter()
+            .map(|row| (row.heading.as_deref(), row.pane_id.as_str(), row.depth))
+            .collect()
+    }
+
+    #[test]
+    fn agents_group_by_space_in_tier_order_with_workers_under_their_orchestrator() {
+        // The operator's example: spaces in tier order, not snapshot order, and
+        // each orchestrator's workers nested under it, alphabetical per level.
+        let snapshot = fleet(
+            &[
+                ("wW", "work"),
+                ("wM", "meta"),
+                ("wA", "assistant"),
+                ("w5068", "work/o-dev-5068"),
+                ("w4086", "work/o-4086-review"),
+            ],
+            &[
+                ("w-walk-per-ac", "w4086", Some("o-4086-review")),
+                ("m-hub-tier-rules", "wM", None),
+                ("o-dev-5068", "w5068", None),
+                ("w-bind-reuse", "w4086", Some("o-4086-review")),
+                ("o-4086-review", "w4086", None),
+                ("w-fix-redirect", "w5068", Some("o-dev-5068")),
+                ("assistant", "wA", None),
+            ],
+        );
+        assert_eq!(
+            shape(&space_grouped_tree_rows(&snapshot)),
+            vec![
+                (Some("assistant"), "pane-assistant", 0),
+                (Some("meta"), "pane-m-hub-tier-rules", 0),
+                (Some("work"), "pane-o-4086-review", 0),
+                (None, "pane-w-bind-reuse", 1),
+                (None, "pane-w-walk-per-ac", 1),
+                (None, "pane-o-dev-5068", 0),
+                (None, "pane-w-fix-redirect", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_worker_stays_under_its_parent_even_in_another_space() {
+        // Nesting is the operator's ask; a worker whose tab sits elsewhere
+        // still renders under its orchestrator rather than being split off.
+        let snapshot = fleet(
+            &[("wM", "meta"), ("wW", "work")],
+            &[("m-lane", "wM", None), ("w-task", "wW", Some("m-lane"))],
+        );
+        assert_eq!(
+            shape(&space_grouped_tree_rows(&snapshot)),
+            vec![(Some("meta"), "pane-m-lane", 0), (None, "pane-w-task", 1)]
+        );
+    }
+
+    #[test]
+    fn an_unknown_space_sorts_after_the_tiers_and_an_orphan_agent_is_kept() {
+        let snapshot = fleet(
+            &[("wZ", "scratch"), ("wI", "infra")],
+            &[
+                ("probe", "wZ", None),
+                ("i-fleet", "wI", None),
+                ("lost", "w-gone", None),
+            ],
+        );
+        let rows = space_grouped_tree_rows(&snapshot);
+        assert_eq!(rows.len(), 3, "no agent may be dropped: {rows:?}");
+        assert_eq!(
+            shape(&rows),
+            vec![
+                (Some("infra"), "pane-i-fleet", 0),
+                (Some("scratch"), "pane-probe", 0),
+                (Some("other"), "pane-lost", 0),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod space_tree_render_tests {
+    use crate::client::shell::tests::snapshot;
+    use crate::client::shell::{ClientShellConfig, ClientShellState};
+    use crate::config::{AgentPanelSortConfig, Config};
+    use crate::protocol::ClientShellAgent;
+
+    #[test]
+    fn tree_mode_draws_a_space_heading_and_keeps_it_out_of_the_click_target() {
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = AgentPanelSortConfig::Tree;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        let mut fleet = snapshot();
+        fleet.workspaces[0].label = "work/o-dev-5068".into();
+        let mut work = fleet.workspaces[0].clone();
+        work.workspace_id = "ws_work".into();
+        work.label = "work".into();
+        work.focused = false;
+        fleet.workspaces.push(work);
+        fleet.agents = vec![ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("o-dev-5068".into()),
+            parent_agent: None,
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Working,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }];
+        state.set_snapshot(Box::new(fleet));
+        state.set_pane_surface(crate::client::shell::tests::surface());
+        let frame = state.compose(106, 40).expect("composed frame");
+        let lines = frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let (agent_hit, _) = state.hits.agents.first().cloned().expect("agent hit");
+        let heading_row = agent_hit.y as usize - 1;
+        assert!(
+            lines[heading_row].trim_start().starts_with("work"),
+            "heading line above the agent: {:?}",
+            lines[heading_row]
+        );
+    }
+}
+
+#[cfg(test)]
+mod full_tab_label_tests {
+    use super::fit_full_tab_label;
+    use crate::ui::{ResolvedToken, ResolvedTokenKind};
+
+    fn text_of(rows: &[Vec<ResolvedToken>]) -> Vec<String> {
+        rows.iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|token| match &token.kind {
+                        ResolvedTokenKind::Tab(text) | ResolvedTokenKind::Workspace(text) => {
+                            Some(text.clone())
+                        }
+                        ResolvedTokenKind::StateIcon => Some("*".into()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
+            })
+            .collect()
+    }
+
+    fn row(kinds: Vec<ResolvedTokenKind>) -> Vec<ResolvedToken> {
+        kinds
+            .into_iter()
+            .map(|kind| ResolvedToken::new(kind, Default::default()))
+            .collect()
+    }
+
+    #[test]
+    fn a_tab_label_that_fits_is_left_alone() {
+        let rows = vec![row(vec![
+            ResolvedTokenKind::StateIcon,
+            ResolvedTokenKind::Tab("o-dev · s1".into()),
+        ])];
+        assert_eq!(
+            text_of(&fit_full_tab_label(rows.clone(), 40)),
+            text_of(&rows)
+        );
+    }
+
+    #[test]
+    fn a_long_tab_label_moves_to_its_own_lines_and_is_never_cut() {
+        let label = "o-4088-4090-triage · w1-s9";
+        let rows = vec![row(vec![
+            ResolvedTokenKind::StateIcon,
+            ResolvedTokenKind::Workspace("work".into()),
+            ResolvedTokenKind::Tab(label.into()),
+        ])];
+        let fitted = fit_full_tab_label(rows, 16);
+        let lines = text_of(&fitted);
+        assert_eq!(lines[0], "*|work", "the rest of the row stays: {lines:?}");
+        // A break at " · " consumes the space before the dot, so compare the
+        // visible characters: nothing of the label may be dropped or cut.
+        let visible = |text: &str| {
+            text.chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        };
+        assert_eq!(
+            visible(&lines[1..].concat()),
+            visible(label),
+            "every character of the label survives: {lines:?}"
+        );
+        for line in &lines[1..] {
+            assert!(
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= 14,
+                "a continuation line fits the width less its 2-column indent: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stack_suffix_is_kept_together_when_it_fits_on_a_line() {
+        // Break at the " · " separator first, so the stack name reads as one
+        // unit rather than being split mid-word.
+        let rows = vec![row(vec![
+            ResolvedTokenKind::StateIcon,
+            ResolvedTokenKind::Tab("o-4086-review · s2".into()),
+        ])];
+        let lines = text_of(&fit_full_tab_label(rows, 16));
+        assert!(
+            lines.contains(&"· s2".to_string()),
+            "stack kept whole: {lines:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod full_tab_label_render_tests {
+    use crate::client::shell::tests::{snapshot, surface};
+    use crate::client::shell::{ClientShellConfig, ClientShellState};
+    use crate::config::Config;
+    use crate::protocol::ClientShellAgent;
+
+    fn frame_text(state: &mut ClientShellState, width: u16) -> String {
+        let frame = state.compose(width, 40).expect("composed frame");
+        frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_default_sidebar_shows_every_character_of_a_stack_tab_label() {
+        // Default config: 26-column sidebar, where the shared fitter used to
+        // cut `<lane> · <stack>` short and drop the stack.
+        let label = "o-4088-4090-triage · w1-s9";
+        let mut fleet = snapshot();
+        fleet.tabs[0].label = label.into();
+        fleet.tabs[0].custom_label = true;
+        fleet.agents = vec![ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("o-4088-4090-triage".into()),
+            parent_agent: None,
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Working,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }];
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(fleet));
+        state.set_pane_surface(surface());
+        let text = frame_text(&mut state, 106);
+        let sidebar = text
+            .lines()
+            .map(|line| line.chars().take(26).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for piece in ["o-4088-4090-tri", "w1-s9"] {
+            assert!(
+                sidebar.contains(piece),
+                "{piece} missing from sidebar:\n{sidebar}"
+            );
+        }
+        assert!(
+            !sidebar.contains('…'),
+            "no part of the label may be ellipsised:\n{sidebar}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod collapse_tests {
+    use super::{collapse_tree_rows, AgentTreeRow};
+    use std::collections::HashSet;
+
+    fn row(pane: &str, depth: usize, heading: Option<&str>) -> AgentTreeRow {
+        AgentTreeRow {
+            pane_id: pane.into(),
+            depth,
+            heading: heading.map(str::to_string),
+        }
+    }
+
+    fn fleet() -> Vec<AgentTreeRow> {
+        vec![
+            row("meta-lane", 0, Some("meta")),
+            row("o-a", 0, Some("work")),
+            row("w-a1", 1, None),
+            row("w-a1-sub", 2, None),
+            row("w-a2", 1, None),
+            row("o-b", 0, None),
+            row("w-b1", 1, None),
+        ]
+    }
+
+    fn name_of(pane: &str) -> Option<String> {
+        Some(pane.to_string())
+    }
+
+    #[test]
+    fn nothing_collapsed_changes_nothing() {
+        let (rows, hidden) = collapse_tree_rows(fleet(), &HashSet::new(), name_of);
+        assert_eq!(rows, fleet());
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn collapsing_an_orchestrator_hides_its_whole_subtree_only() {
+        let collapsed = HashSet::from(["agent:o-a".to_string()]);
+        let (rows, hidden) = collapse_tree_rows(fleet(), &collapsed, name_of);
+        let panes = rows
+            .iter()
+            .map(|row| row.pane_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(panes, vec!["meta-lane", "o-a", "o-b", "w-b1"]);
+        assert_eq!(
+            hidden.get("o-a"),
+            Some(&3),
+            "counts every hidden descendant"
+        );
+    }
+
+    #[test]
+    fn a_heading_on_a_hidden_row_moves_to_the_next_visible_row() {
+        // Collapsing never removes a space heading: if the first row of a space
+        // were hidden, its heading must survive on the next row that renders.
+        let rows = vec![row("o-a", 0, Some("work")), row("w-a1", 1, None)];
+        let collapsed = HashSet::from(["agent:o-a".to_string()]);
+        let (out, _) = collapse_tree_rows(rows, &collapsed, name_of);
+        assert_eq!(out[0].heading.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn a_leaf_named_in_the_collapsed_set_is_unaffected() {
+        let collapsed = HashSet::from(["agent:w-b1".to_string()]);
+        let (rows, hidden) = collapse_tree_rows(fleet(), &collapsed, name_of);
+        assert_eq!(rows, fleet());
+        assert!(hidden.is_empty(), "a leaf has nothing to hide: {hidden:?}");
+    }
+}
+
+#[cfg(test)]
+mod collapse_click_tests {
+    use crate::client::shell::tests::{snapshot, surface};
+    use crate::client::shell::{ClientShellConfig, ClientShellState};
+    use crate::config::{AgentPanelSortConfig, Config};
+    use crate::protocol::ClientShellAgent;
+    use crate::raw_input::RawInputEvent;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    fn agent(name: &str, pane: &str, parent: Option<&str>) -> ClientShellAgent {
+        ClientShellAgent {
+            pane_id: pane.into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some(name.into()),
+            parent_agent: parent.map(str::to_string),
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Idle,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        }
+    }
+
+    fn click(state: &mut ClientShellState, column: u16, row: u16) {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::empty(),
+            })]);
+        }
+    }
+
+    #[test]
+    fn clicking_an_orchestrators_toggle_collapses_and_expands_its_workers() {
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = AgentPanelSortConfig::Tree;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        let mut fleet = snapshot();
+        fleet.workspaces[0].label = "work".into();
+        fleet.agents = vec![
+            agent("o-lead", "pane_1", None),
+            agent("w-one", "pane_2", Some("o-lead")),
+            agent("w-two", "pane_3", Some("o-lead")),
+        ];
+        state.set_snapshot(Box::new(fleet));
+        state.set_pane_surface(surface());
+
+        state.compose(106, 40).expect("frame");
+        assert_eq!(state.hits.agents.len(), 3, "expanded: all three rows");
+        let (toggle, key) = state
+            .hits
+            .agent_toggles
+            .first()
+            .cloned()
+            .expect("parent has a toggle");
+        assert_eq!(key, "agent:o-lead");
+        assert_eq!(
+            state.hits.agent_toggles.len(),
+            1,
+            "only a row with children gets one"
+        );
+
+        click(&mut state, toggle.x, toggle.y);
+        state.compose(106, 40).expect("frame");
+        let panes = state
+            .hits
+            .agents
+            .iter()
+            .map(|(_, pane)| pane.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(panes, vec!["pane_1"], "collapsed: the workers are hidden");
+        assert!(state.collapsed_groups.contains("agent:o-lead"));
+
+        let (toggle, _) = state
+            .hits
+            .agent_toggles
+            .first()
+            .cloned()
+            .expect("toggle still there");
+        click(&mut state, toggle.x, toggle.y);
+        state.compose(106, 40).expect("frame");
+        assert_eq!(state.hits.agents.len(), 3, "expanded again");
+    }
+
+    #[test]
+    fn next_agent_skips_rows_inside_a_collapsed_subtree() {
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = AgentPanelSortConfig::Tree;
+        let mut fleet = snapshot();
+        fleet.agents = vec![
+            agent("a-lead", "pane_1", None),
+            agent("a-worker", "pane_2", Some("a-lead")),
+            agent("b-solo", "pane_3", None),
+        ];
+        let collapsed = std::collections::HashSet::from(["agent:a-lead".to_string()]);
+        let order = super::visible_agent_pane_ids(&fleet, AgentPanelSortConfig::Tree, &collapsed);
+        assert_eq!(order, vec!["pane_1", "pane_3"]);
+        let _ = config;
     }
 }

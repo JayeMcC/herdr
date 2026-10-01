@@ -49,6 +49,16 @@ pub struct AgentRenameParams {
     pub name: Option<String>,
 }
 
+/// Record (or clear) which agent spawned a LIVE agent. `agent start --parent`
+/// records the edge at spawn; this is for agents already running without one,
+/// so they can be nested without a restart. Absent `parent` clears the edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentSetParentParams {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentViewSetParams {
     pub source: String,

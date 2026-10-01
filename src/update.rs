@@ -803,12 +803,12 @@ fn windows_installed_herdr_exe_path() -> Result<PathBuf, String> {
 // Upgrade flow helpers
 // ---------------------------------------------------------------------------
 
-fn running_inside_herdr_env(herdr_env: Option<&str>) -> bool {
-    herdr_env == Some(crate::HERDR_ENV_VALUE)
+fn running_inside_twodr_env(twodr_env: Option<&str>) -> bool {
+    twodr_env == Some(crate::TWODR_ENV_VALUE)
 }
 
-fn running_inside_herdr() -> bool {
-    running_inside_herdr_env(env::var(crate::HERDR_ENV_VAR).ok().as_deref())
+fn running_inside_twodr() -> bool {
+    running_inside_twodr_env(env::var(crate::TWODR_ENV_VAR).ok().as_deref())
 }
 
 #[cfg(not(windows))]
@@ -2161,7 +2161,7 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
         );
     }
 
-    if running_inside_herdr() {
+    if running_inside_twodr() {
         return Err("run `herdr update` outside herdr after detaching from the session".into());
     }
 
@@ -2842,10 +2842,10 @@ mod tests {
     }
 
     #[test]
-    fn running_inside_herdr_env_requires_marker() {
-        assert!(running_inside_herdr_env(Some(crate::HERDR_ENV_VALUE)));
-        assert!(!running_inside_herdr_env(None));
-        assert!(!running_inside_herdr_env(Some("0")));
+    fn running_inside_twodr_env_requires_marker() {
+        assert!(running_inside_twodr_env(Some(crate::TWODR_ENV_VALUE)));
+        assert!(!running_inside_twodr_env(None));
+        assert!(!running_inside_twodr_env(Some("0")));
     }
 
     #[test]
@@ -3106,7 +3106,10 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(
-            err.contains("herdr session stop work"),
+            err.contains(&format!(
+                "{} session stop work",
+                crate::build_info::COMMAND_NAME
+            )),
             "unexpected error: {err}"
         );
     }

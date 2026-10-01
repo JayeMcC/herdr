@@ -770,8 +770,11 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
         tokens: Vec::new(),
         focused: true,
     });
-    let config =
-        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
+    // The toggle cycle starts from `spaces` here; the fork's default is the
+    // tree, so name the starting mode rather than inherit it.
+    let mut spaces = Config::default();
+    spaces.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Spaces;
+    let config = ClientShellConfig::from_config(&spaces).with_preferences_path(path.clone());
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());

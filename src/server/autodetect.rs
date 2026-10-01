@@ -27,7 +27,7 @@ const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Private daemon-start hint used to seed a fresh headless server from the
 /// directory where the user ran `herdr`.
-pub(crate) const STARTUP_CWD_ENV_VAR: &str = "HERDR_STARTUP_CWD";
+pub(crate) const STARTUP_CWD_ENV_VAR: &str = "TWODR_STARTUP_CWD";
 
 // ---------------------------------------------------------------------------
 // Server detection
@@ -273,7 +273,7 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
             "server did not become ready within {}s (socket: {}). The background server may still be starting; try `herdr` again, or check {}",
             timeout.as_secs(),
             socket_path.display(),
-            crate::session::data_dir().join("herdr-server.log").display()
+            crate::session::data_dir().join("twodr-server.log").display()
         ),
     ))
 }
@@ -585,11 +585,17 @@ test "$sid" = "$$"
             "unexpected error: {message}"
         );
         assert!(
-            message.contains("Run `herdr session stop work`"),
+            message.contains(&format!(
+                "Run `{} session stop work`",
+                crate::build_info::COMMAND_NAME
+            )),
             "unexpected error: {message}"
         );
         assert!(
-            message.contains("then run `herdr session attach work` again"),
+            message.contains(&format!(
+                "then run `{} session attach work` again",
+                crate::build_info::COMMAND_NAME
+            )),
             "unexpected error: {message}"
         );
         std::env::remove_var("XDG_CONFIG_HOME");

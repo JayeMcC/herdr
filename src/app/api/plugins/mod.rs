@@ -1279,6 +1279,47 @@ command = ["echo", " a", "first "]
     }
 
     #[test]
+    fn a_twodr_named_manifest_and_key_are_read_and_win_over_the_upstream_name() {
+        let root = unique_temp_path("plugin-twodr-manifest");
+        std::fs::create_dir_all(&root).unwrap();
+        let body = |id: &str, key: &str| {
+            format!(
+                "id = \"{id}\"\nname = \"Twodr Manifest\"\nversion = \"0.1.0\"\n{key} = \"{}\"\nplatforms = [\"linux\", \"macos\", \"windows\"]\n",
+                crate::build_info::BASE_VERSION
+            )
+        };
+        std::fs::write(
+            root.join("herdr-plugin.toml"),
+            body("example.upstream-name", "min_herdr_version"),
+        )
+        .unwrap();
+        let upstream = load_plugin_manifest(&root.display().to_string(), true).unwrap();
+        assert_eq!(upstream.plugin_id, "example.upstream-name");
+
+        std::fs::write(
+            root.join("twodr-plugin.toml"),
+            body("example.twodr-name", "min_twodr_version"),
+        )
+        .unwrap();
+        let twodr = load_plugin_manifest(&root.display().to_string(), true).unwrap();
+        assert_eq!(twodr.plugin_id, "example.twodr-name");
+        assert_eq!(twodr.min_herdr_version, crate::build_info::BASE_VERSION);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_env_is_published_under_both_prefixes() {
+        let env = super::env::with_twodr_names(vec![
+            ("HERDR_PLUGIN_ID".into(), "example.a".into()),
+            ("PATH".into(), "/bin".into()),
+        ]);
+        assert!(env.contains(&("HERDR_PLUGIN_ID".into(), "example.a".into())));
+        assert!(env.contains(&("TWODR_PLUGIN_ID".into(), "example.a".into())));
+        assert_eq!(env.iter().filter(|(key, _)| key == "PATH").count(), 1);
+        assert!(!env.iter().any(|(key, _)| key == "TWODR_PATH"));
+    }
+
+    #[test]
     fn link_rejects_invalid_min_herdr_versions() {
         let cases = [
             (

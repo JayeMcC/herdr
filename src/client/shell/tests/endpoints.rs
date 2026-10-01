@@ -829,6 +829,9 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     use crate::config::{AgentSidebarToken, StatusIndicatorStyle};
 
     let mut config = Config::default();
+    // Asserts the `grouped` label and the toggle from `spaces`; name the mode
+    // rather than inherit the fork's tree default.
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Spaces;
     config.ui.status_indicators = StatusIndicatorStyle::Symbols;
     config.ui.sidebar.agents.rows = vec![vec![
         AgentSidebarToken::StateIcon,
@@ -1074,7 +1077,8 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
         .join("\n");
     assert!(text.contains("Local · local agent"), "frame: {text}");
     assert!(text.contains("Build · remote agent"), "frame: {text}");
-    assert!(text.contains("grouped"), "frame: {text}");
+    // The default view's label is the default sort's: the tree.
+    assert!(text.contains("tree"), "frame: {text}");
 }
 
 #[test]

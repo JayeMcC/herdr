@@ -2048,10 +2048,38 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
-                let group_toggle = self.hits.workspaces.iter().find_map(|hit| {
-                    let (rect, key) = hit.group_toggle.as_ref()?;
-                    super::contains(*rect, point).then(|| (hit.endpoint_id.clone(), key.clone()))
-                });
+                // Agent-tree collapse toggles share the local collapse set
+                // with the spaces panel (keys are namespaced `agent:`), so
+                // they persist through the same preferences file.
+                let agent_toggle = self
+                    .hits
+                    .agent_toggles
+                    .iter()
+                    .find_map(|(rect, key)| super::contains(*rect, point).then(|| key.clone()));
+                if let Some(key) = agent_toggle {
+                    self.toggle_collapsed_group(&ClientEndpointId::Local, key);
+                    outcome.repaint = true;
+                    self.persist_chrome_preferences(outcome);
+                    return;
+                }
+                let group_toggle = self
+                    .hits
+                    .workspaces
+                    .iter()
+                    .find_map(|hit| {
+                        let (rect, key) = hit.group_toggle.as_ref()?;
+                        super::contains(*rect, point)
+                            .then(|| (hit.endpoint_id.clone(), key.clone()))
+                    })
+                    .or_else(|| {
+                        self.hits
+                            .space_headings
+                            .iter()
+                            .find_map(|(rect, endpoint, key)| {
+                                super::contains(*rect, point)
+                                    .then(|| (endpoint.clone(), key.clone()))
+                            })
+                    });
                 if let Some((endpoint_id, key)) = group_toggle {
                     self.toggle_collapsed_group(&endpoint_id, key);
                     outcome.repaint = true;

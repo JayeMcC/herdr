@@ -1,5 +1,11 @@
 import { beforeEach, expect, mock, test } from "bun:test";
 
+// The assets read TWODR_* before the HERDR_* alias. A run inside a twodr pane
+// inherits the real TWODR_*, which would override these fixtures, so clear it.
+for (const name of ["TWODR_ENV", "TWODR_PANE_ID", "TWODR_SOCKET_PATH", "TWODR_BIN_PATH"]) {
+  delete process.env[name];
+}
+
 const requests: unknown[] = [];
 const clients: FakeClient[] = [];
 const requestWaiters: Array<() => void> = [];

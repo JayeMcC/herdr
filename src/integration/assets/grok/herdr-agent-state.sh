@@ -2,8 +2,8 @@
 # installed by herdr
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
-# HERDR_INTEGRATION_ID=grok
-# HERDR_INTEGRATION_VERSION=2
+# TWODR_INTEGRATION_ID=grok
+# TWODR_INTEGRATION_VERSION=2
 
 set -eu
 
@@ -17,6 +17,12 @@ case "$action" in
   *) exit 0 ;;
 esac
 
+# twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+# Prefer the twodr name so a pane from either side of that change reports.
+HERDR_ENV="${TWODR_ENV:-${HERDR_ENV:-}}"
+HERDR_PANE_ID="${TWODR_PANE_ID:-${HERDR_PANE_ID:-}}"
+HERDR_SOCKET_PATH="${TWODR_SOCKET_PATH:-${HERDR_SOCKET_PATH:-}}"
+export HERDR_ENV HERDR_PANE_ID HERDR_SOCKET_PATH
 [ "${HERDR_ENV:-}" = "1" ] || exit 0
 [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
@@ -29,7 +35,7 @@ import random
 import socket
 import time
 
-source = "herdr:grok"
+source = "twodr:grok"
 pane_id = os.environ.get("HERDR_PANE_ID")
 socket_path = os.environ.get("HERDR_SOCKET_PATH")
 hook_input_file = os.environ.get("HERDR_HOOK_INPUT_FILE")

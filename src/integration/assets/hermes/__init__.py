@@ -1,7 +1,7 @@
 """Hermes plugin installed by Herdr to report resumable session identity."""
 
-# HERDR_INTEGRATION_ID=hermes
-# HERDR_INTEGRATION_VERSION=5
+# TWODR_INTEGRATION_ID=hermes
+# TWODR_INTEGRATION_VERSION=6
 
 from __future__ import annotations
 
@@ -9,7 +9,13 @@ import os
 import subprocess
 import time
 
-_SOURCE = "herdr:hermes"
+# twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+# Prefer the twodr name so a pane from either side of that change reports.
+for _name in ('ENV', 'PANE_ID', 'BIN_PATH',):
+    if os.environ.get("TWODR_" + _name):
+        os.environ["HERDR_" + _name] = os.environ["TWODR_" + _name]
+
+_SOURCE = "twodr:hermes"
 _AGENT = "hermes"
 _INTERACTIVE_PLATFORMS = {"cli", "tui", "desktop", "acp"}
 

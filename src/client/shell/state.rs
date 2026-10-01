@@ -94,6 +94,10 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
+    /// Collapse toggles on agent-tree rows: the rect and its collapse key.
+    pub(super) agent_toggles: Vec<(Rect, String)>,
+    /// Derived space-group headings: the row, its endpoint and collapse key.
+    pub(super) space_headings: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,

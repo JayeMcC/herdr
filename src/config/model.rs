@@ -95,7 +95,6 @@ pub enum ToastClipboardPosition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentPanelSortConfig {
-    #[default]
     #[serde(alias = "workspaces")]
     Spaces,
     Priority,
@@ -103,9 +102,12 @@ pub enum AgentPanelSortConfig {
     /// `spaces` preserves spawn order and `priority` orders by attention, so
     /// neither gives a stable, predictable position for a named fleet.
     Alphabetical,
-    /// Nest each agent under the agent that spawned it, siblings A-Z within
-    /// each level. Agents with no recorded parent are roots, so a fleet that
-    /// never records one still renders as a flat alphabetical list.
+    /// The default (operator 2026-09-30): agents grouped by space, each nested
+    /// under the agent that spawned it, siblings A-Z within each level. Agents
+    /// with no recorded parent are roots, so a fleet that never records one
+    /// still renders as an alphabetical list per space. Kept LAST: variant
+    /// order is part of any encoded form, so the default moves, not the variant.
+    #[default]
     Tree,
 }
 
@@ -1191,7 +1193,7 @@ impl Default for UiConfig {
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),
-            agent_panel_sort: AgentPanelSortConfig::Spaces,
+            agent_panel_sort: AgentPanelSortConfig::Tree,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
@@ -1411,9 +1413,18 @@ resume_agents_on_restore = false
 
     #[test]
     fn agent_panel_sort_config_parses_alias_and_defaults() {
+        // The fork's default is the tree (operator 2026-09-30: "change the
+        // default"): agents grouped by space, workers under their orchestrator.
         assert_eq!(
             Config::default().ui.agent_panel_sort,
-            AgentPanelSortConfig::Spaces
+            AgentPanelSortConfig::Tree
+        );
+        let toml = "[ui]\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.ui.agent_panel_sort,
+            AgentPanelSortConfig::Tree,
+            "a config that does not name a sort gets the tree"
         );
 
         let toml = r#"
@@ -1435,7 +1446,7 @@ agent_panel_sort = "workspaces"
 agent_panel_scope = "current"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Tree);
     }
 
     #[test]

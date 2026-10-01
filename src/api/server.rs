@@ -424,6 +424,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentExplain(_) => "agent.explain",
         Method::AgentSendKeys(_) => "agent.send_keys",
         Method::AgentRename(_) => "agent.rename",
+        Method::AgentSetParent(_) => "agent.set_parent",
         Method::AgentViewSet(_) => "agent.view.set",
         Method::AgentViewClear(_) => "agent.view.clear",
         Method::AgentFocus(_) => "agent.focus",
@@ -1078,7 +1079,7 @@ mod tests {
 
         let expected = config_home
             .join(crate::config::app_dir_name())
-            .join("herdr.sock");
+            .join("twodr.sock");
         assert_eq!(socket_path(), expected);
 
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -1098,7 +1099,7 @@ mod tests {
             .join(crate::config::app_dir_name())
             .join("sessions")
             .join("work")
-            .join("herdr.sock");
+            .join("twodr.sock");
         assert_eq!(socket_path(), expected);
 
         std::env::remove_var(crate::session::SESSION_ENV_VAR);

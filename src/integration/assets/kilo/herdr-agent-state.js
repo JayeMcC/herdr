@@ -1,12 +1,18 @@
 // installed by herdr
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
-// HERDR_INTEGRATION_ID=kilo
-// HERDR_INTEGRATION_VERSION=4
+// TWODR_INTEGRATION_ID=kilo
+// TWODR_INTEGRATION_VERSION=5
 
 import net from "node:net";
 
-const SOURCE = "herdr:kilo";
+// twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+// Prefer the twodr name so a pane from either side of that change reports.
+for (const name of ["ENV", "PANE_ID", "SOCKET_PATH"]) {
+  if (process.env[`TWODR_${name}`]) process.env[`HERDR_${name}`] = process.env[`TWODR_${name}`];
+}
+
+const SOURCE = "twodr:kilo";
 const AGENT = "kilo";
 let reportSeq = Date.now() * 1000;
 

@@ -1,12 +1,18 @@
 // installed by herdr
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
-// HERDR_INTEGRATION_ID=opencode
-// HERDR_INTEGRATION_VERSION=12
+// TWODR_INTEGRATION_ID=opencode
+// TWODR_INTEGRATION_VERSION=12
 
 import net from "node:net";
 
-const SOURCE = "herdr:opencode";
+// twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+// Prefer the twodr name so a pane from either side of that change reports.
+for (const name of ["ENV", "PANE_ID", "SOCKET_PATH"]) {
+  if (process.env[`TWODR_${name}`]) process.env[`HERDR_${name}`] = process.env[`TWODR_${name}`];
+}
+
+const SOURCE = "twodr:opencode";
 const AGENT = "opencode";
 let reportSeq = Date.now() * 1000;
 let requestChain = Promise.resolve();

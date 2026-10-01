@@ -754,7 +754,36 @@ fn mobile_items(
         palette,
     ));
     for endpoint in super::aggregate_navigation::cached_endpoint_snapshots(endpoints) {
-        for entry in super::render::workspace_entries(endpoint.snapshot, &HashSet::new()) {
+        for row in super::sidebar::sidebar_rows(endpoint.snapshot, &HashSet::new()) {
+            let entry = match row {
+                super::sidebar::SidebarRow::Workspace(entry) => entry,
+                super::sidebar::SidebarRow::Heading(heading) => {
+                    let status = heading.status(endpoint.snapshot);
+                    items.push(MobileItem {
+                        lines: vec![Line::from(vec![
+                            Span::styled(
+                                format!("  {} ", status_icon(status, config.status_indicators)),
+                                Style::default()
+                                    .fg(status_color(status, palette))
+                                    .bg(palette.panel_bg),
+                            ),
+                            Span::styled(
+                                crate::ui::truncate_end(
+                                    &format!("{} · {}", endpoint.label, heading.label),
+                                    usize::from(content_width.saturating_sub(5)),
+                                ),
+                                Style::default()
+                                    .fg(palette.subtext0)
+                                    .bg(palette.panel_bg)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ])],
+                        background: palette.panel_bg,
+                        target: None,
+                    });
+                    continue;
+                }
+            };
             let Some(workspace) = endpoint.snapshot.workspaces.get(entry.index) else {
                 continue;
             };

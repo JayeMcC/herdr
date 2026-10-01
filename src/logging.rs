@@ -19,8 +19,7 @@ pub(crate) fn init_file_logging(file_name: &str) {
         return;
     };
 
-    let filter =
-        EnvFilter::try_from_env("HERDR_LOG").unwrap_or_else(|_| EnvFilter::new("herdr=info"));
+    let filter = log_filter();
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -30,11 +29,29 @@ pub(crate) fn init_file_logging(file_name: &str) {
         .try_init();
 }
 
+/// The directive for `init_file_logging`. `TWODR_LOG` is the real override;
+/// `HERDR_LOG` is honoured as a fallback so an existing setup keeps working.
+///
+/// The default targets this crate by its real name. It read `herdr=info`,
+/// which matched no module once the crate was renamed `twodr`, so every log
+/// line was filtered out and the server and client logs stayed empty
+/// (measured 2026-09-30: both 0 bytes since 2026-09-21).
+fn log_filter() -> EnvFilter {
+    log_filter_from(|name| std::env::var(name).ok())
+}
+
+fn log_filter_from(env: impl Fn(&str) -> Option<String>) -> EnvFilter {
+    ["TWODR_LOG", "HERDR_LOG"]
+        .into_iter()
+        .find_map(|name| env(name).and_then(|value| EnvFilter::try_new(value).ok()))
+        .unwrap_or_else(|| EnvFilter::new(concat!(env!("CARGO_CRATE_NAME"), "=info")))
+}
+
 pub(crate) fn help_log_paths_summary() -> String {
     let dir = crate::session::data_dir();
     format!(
-        "{} (plus herdr-client.log, herdr-server.log)",
-        dir.join("herdr.log").display()
+        "{} (plus twodr-client.log, twodr-server.log)",
+        dir.join("twodr.log").display()
     )
 }
 
@@ -630,5 +647,25 @@ mod tests {
         assert!(!rotated_log_path(&path, 1).exists());
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn default_log_filter_targets_this_crate() {
+        // `herdr=info` matched no module after the crate became `twodr`, so the
+        // file logs were silently empty.
+        let filter = log_filter_from(|_| None).to_string();
+        assert_eq!(filter, "twodr=info");
+    }
+
+    #[test]
+    fn twodr_log_wins_and_herdr_log_is_a_fallback() {
+        let both = |name: &str| match name {
+            "TWODR_LOG" => Some("twodr=debug".to_string()),
+            "HERDR_LOG" => Some("twodr=trace".to_string()),
+            _ => None,
+        };
+        assert_eq!(log_filter_from(both).to_string(), "twodr=debug");
+        let legacy = |name: &str| (name == "HERDR_LOG").then(|| "twodr=trace".to_string());
+        assert_eq!(log_filter_from(legacy).to_string(), "twodr=trace");
     }
 }

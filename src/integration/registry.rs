@@ -523,7 +523,8 @@ pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
             .trim_start_matches('#')
             .trim();
         marker_line
-            .strip_prefix(super::INTEGRATION_VERSION_MARKER)?
+            .strip_prefix(super::INTEGRATION_VERSION_MARKER)
+            .or_else(|| marker_line.strip_prefix(super::LEGACY_INTEGRATION_VERSION_MARKER))?
             .trim()
             .parse()
             .ok()

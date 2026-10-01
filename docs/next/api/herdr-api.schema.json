@@ -1332,6 +1332,24 @@
           ],
           "type": "object"
         },
+        "AgentSetParentParams": {
+          "description": "Record (or clear) which agent spawned a LIVE agent. `agent start --parent`\nrecords the edge at spawn; this is for agents already running without one,\nso they can be nested without a restart. Absent `parent` clears the edge.",
+          "properties": {
+            "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentStartParams": {
           "properties": {
             "args": {
@@ -5386,6 +5404,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentRenameParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.set_parent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentSetParentParams"
             }
           },
           "required": [

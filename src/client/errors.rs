@@ -24,9 +24,10 @@ impl std::fmt::Display for ClientError {
             ClientError::ConnectionFailed(err) => {
                 write!(f, "failed to connect to server: {err}")?;
                 let path = client_socket_path();
+                let name = crate::build_info::COMMAND_NAME;
                 write!(
                     f,
-                    "\nIs herdr server running? Start it with `herdr server`."
+                    "\nIs {name} server running? Start it with `{name} server`."
                 )?;
                 write!(f, "\nSocket path: {}", path.display())
             }

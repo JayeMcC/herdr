@@ -1,9 +1,16 @@
 #!/bin/sh
 # managed by herdr; reinstalling the integration replaces this file.
-# HERDR_INTEGRATION_ID=qodercli
-# HERDR_INTEGRATION_VERSION=3
+# TWODR_INTEGRATION_ID=qodercli
+# TWODR_INTEGRATION_VERSION=4
 
 [ "${1:-}" = "session" ] || exit 0
+# twodr panes export TWODR_* and, until it is dropped, a HERDR_* alias.
+# Prefer the twodr name so a pane from either side of that change reports.
+HERDR_ENV="${TWODR_ENV:-${HERDR_ENV:-}}"
+HERDR_PANE_ID="${TWODR_PANE_ID:-${HERDR_PANE_ID:-}}"
+HERDR_SOCKET_PATH="${TWODR_SOCKET_PATH:-${HERDR_SOCKET_PATH:-}}"
+HERDR_BIN_PATH="${TWODR_BIN_PATH:-${HERDR_BIN_PATH:-}}"
+export HERDR_ENV HERDR_PANE_ID HERDR_SOCKET_PATH HERDR_BIN_PATH
 [ "${HERDR_ENV:-}" = "1" ] || exit 0
 [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
@@ -25,7 +32,7 @@ try:
         [
             os.environ.get("HERDR_BIN_PATH") or "herdr",
             "pane", "report-agent-session", os.environ["HERDR_PANE_ID"],
-            "--source", "herdr:qodercli", "--agent", "qodercli",
+            "--source", "twodr:qodercli", "--agent", "qodercli",
             "--agent-session-id", session_id, "--seq", str(time.time_ns()),
         ],
         stdin=subprocess.DEVNULL,
