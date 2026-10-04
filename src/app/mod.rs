@@ -1015,10 +1015,7 @@ mod tests {
     }
 
     fn temp_config_path(name: &str) -> std::path::PathBuf {
-        let unique = format!(
-            "herdr-{name}-{}",
-            crate::test_env::unique_token()
-        );
+        let unique = format!("herdr-{name}-{}", crate::test_env::unique_token());
         std::env::temp_dir().join(unique).join("config.toml")
     }
 
@@ -2889,6 +2886,126 @@ mod tests {
             app.state.terminals[&terminal_id].agent_name.as_deref(),
             Some("worker")
         );
+    }
+
+    fn start_claude_agent(
+        app: &mut App,
+        args: Vec<String>,
+    ) -> (crate::terminal::TerminalId, Vec<String>) {
+        let workspace = Workspace::test_new("claude-agent-start");
+        let root = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.pane_info(0, root).unwrap().pane_id;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        let (runtime, _receiver) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 4);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let (_agent, argv) = app
+            .start_agent(crate::api::schema::AgentStartParams {
+                name: "worker".into(),
+                kind: "claude".into(),
+                pane_id,
+                parent_agent: None,
+                args,
+                timeout_ms: Some(4_000),
+            })
+            .unwrap_or_else(|_| panic!("claude agent start should succeed"));
+        (terminal_id, argv)
+    }
+
+    #[tokio::test]
+    async fn claude_agent_start_assigns_and_persists_session_id() {
+        let mut app = test_app();
+        let (terminal_id, argv) =
+            start_claude_agent(&mut app, vec!["--dangerously-skip-permissions".into()]);
+
+        let [_, flag, session_flag, session_id] = argv.as_slice() else {
+            panic!("unexpected argv {argv:?}");
+        };
+        assert_eq!(flag, "--dangerously-skip-permissions");
+        assert_eq!(session_flag, "--session-id");
+        assert!(uuid::Uuid::parse_str(session_id).is_ok());
+
+        let terminal = &app.state.terminals[&terminal_id];
+        let session = terminal.persisted_agent_session.as_ref().unwrap();
+        assert_eq!(session.source, "herdr:claude");
+        assert_eq!(session.agent, "claude");
+        assert_eq!(&session.session_ref.value, session_id);
+        assert_eq!(
+            terminal.agent_launch_args.as_deref(),
+            Some(&["--dangerously-skip-permissions".to_string()][..])
+        );
+
+        let snapshot = crate::persist::capture(
+            &app.state.workspaces,
+            &app.state.terminals,
+            &app.terminal_runtimes,
+            app.state.active,
+            app.state.selected,
+        );
+        let pane = snapshot.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(pane.agent_session.as_ref().unwrap().value, *session_id);
+        assert_eq!(
+            pane.agent_launch_args.as_deref(),
+            Some(&["--dangerously-skip-permissions".to_string()][..])
+        );
+
+        for runtime in app.terminal_runtimes.drain().map(|(_, runtime)| runtime) {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_agent_start_honours_explicit_resume() {
+        let session_id = "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+        let mut app = test_app();
+        let (terminal_id, argv) = start_claude_agent(
+            &mut app,
+            vec![
+                "--resume".into(),
+                session_id.into(),
+                "--permission-mode".into(),
+                "plan".into(),
+            ],
+        );
+
+        assert_eq!(
+            argv,
+            vec![
+                "claude",
+                "--resume",
+                session_id,
+                "--permission-mode",
+                "plan"
+            ]
+        );
+        let terminal = &app.state.terminals[&terminal_id];
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .unwrap()
+                .session_ref
+                .value,
+            session_id
+        );
+        assert_eq!(
+            terminal.agent_launch_args.as_deref(),
+            Some(&["--permission-mode".to_string(), "plan".to_string()][..])
+        );
+
+        for runtime in app.terminal_runtimes.drain().map(|(_, runtime)| runtime) {
+            runtime.shutdown();
+        }
     }
 
     #[test]
