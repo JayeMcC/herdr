@@ -177,8 +177,20 @@ impl App {
         {
             return Err(AgentStartError::InvalidArgument);
         }
+        let mut args = params.args;
+        // A Claude launch that leaves the session to Claude is pinned to a
+        // fresh id, so a restart can resume it without a hook report.
+        if kind == crate::detect::Agent::Claude
+            && crate::agent_resume::claude_launch_needs_session_id(&args)
+        {
+            args.push("--session-id".into());
+            args.push(crate::agent_resume::new_claude_session_id());
+        }
         let persisted_agent_session =
-            crate::agent_resume::persisted_session_from_launch_args(kind, &params.args);
+            crate::agent_resume::persisted_session_from_launch_args(kind, &args);
+        let agent_launch_args = (kind == crate::detect::Agent::Claude)
+            .then(|| crate::agent_resume::claude_resume_launch_args(&args))
+            .filter(|args| !args.is_empty());
         let conflicts = self.agent_name_conflicts(&name, "");
         if !conflicts.is_empty() {
             return Err(AgentStartError::DuplicateName {
@@ -229,7 +241,7 @@ impl App {
             .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
 
         let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
-        argv.extend(params.args);
+        argv.extend(args);
         let command = crate::platform::interactive_shell_command(&argv, &shell_name)
             .ok_or(AgentStartError::InvalidArgument)?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
@@ -257,6 +269,7 @@ impl App {
         if let Some(session) = persisted_agent_session {
             terminal.set_managed_agent_launch_session(session);
         }
+        terminal.agent_launch_args = agent_launch_args;
         self.state.mark_session_dirty();
         self.schedule_session_save();
 

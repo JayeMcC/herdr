@@ -73,6 +73,9 @@ pub fn persisted_session_from_launch_args(
     agent: crate::detect::Agent,
     args: &[String],
 ) -> Option<PersistedAgentSession> {
+    if agent == crate::detect::Agent::Claude {
+        return claude_session_from_launch_args(args);
+    }
     let [command, session_id] = args else {
         return None;
     };
@@ -85,6 +88,203 @@ pub fn persisted_session_from_launch_args(
         agent: "codex".into(),
         session_ref: AgentSessionRef::id(session_id.clone())?,
     })
+}
+
+/// Claude options that pick, fork or relocate the conversation. They describe
+/// the launch, not the agent, so a resume must not replay them: the resume
+/// argv names the session itself.
+const CLAUDE_SESSION_OPTIONS: &[&str] = &[
+    "--session-id",
+    "-r",
+    "--resume",
+    "-c",
+    "--continue",
+    "--fork-session",
+    "--from-pr",
+    "--teleport",
+    "--cloud",
+    "-w",
+    "--worktree",
+    "--tmux",
+];
+
+/// Claude options that take exactly one value.
+const CLAUDE_VALUE_OPTIONS: &[&str] = &[
+    "--agent",
+    "--agents",
+    "--append-system-prompt",
+    "--append-system-prompt-file",
+    "--autocompact",
+    "--client-data-url",
+    "--debug-file",
+    "--effort",
+    "--environment",
+    "--fallback-model",
+    "--input-format",
+    "--json-schema",
+    "--max-budget-usd",
+    "--model",
+    "-n",
+    "--name",
+    "--output-format",
+    "--permission-mode",
+    "--permission-prompts",
+    "--plugin-dir",
+    "--plugin-url",
+    "--remote-control-session-name-prefix",
+    "--session-id",
+    "--setting-sources",
+    "--settings",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--system-prompt-snapshot",
+];
+
+/// Claude options that take every following non-option token.
+const CLAUDE_VARIADIC_OPTIONS: &[&str] = &[
+    "--add-dir",
+    "--allowedTools",
+    "--allowed-tools",
+    "--betas",
+    "--disallowedTools",
+    "--disallowed-tools",
+    "--file",
+    "--mcp-config",
+    "--tools",
+];
+
+/// Claude options whose value is optional: the next token is taken when it is
+/// not itself an option.
+const CLAUDE_OPTIONAL_VALUE_OPTIONS: &[&str] = &[
+    "-d",
+    "--debug",
+    "-r",
+    "--resume",
+    "--cloud",
+    "--from-pr",
+    "--prompt-suggestions",
+    "--remote-control",
+    "--teleport",
+    "-w",
+    "--worktree",
+];
+
+#[derive(Debug, PartialEq, Eq)]
+struct ClaudeArg<'a> {
+    option: Option<&'a str>,
+    tokens: &'a [String],
+}
+
+/// Split Claude launch args into options with their values and positional
+/// tokens, following Claude's own option grammar. Everything after `--` is
+/// positional. An unknown option is treated as a switch.
+fn claude_args(args: &[String]) -> Vec<ClaudeArg<'_>> {
+    let mut parsed = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let token = args[index].as_str();
+        if token == "--" {
+            parsed.push(ClaudeArg {
+                option: None,
+                tokens: &args[index..],
+            });
+            break;
+        }
+        if !token.starts_with('-') || token == "-" {
+            parsed.push(ClaudeArg {
+                option: None,
+                tokens: &args[index..=index],
+            });
+            index += 1;
+            continue;
+        }
+        let (name, inline_value) = match token.split_once('=') {
+            Some((name, _)) if name.starts_with("--") => (name, true),
+            _ => (token, false),
+        };
+        let start = index;
+        index += 1;
+        if !inline_value {
+            let is_value =
+                |index: usize| args.get(index).is_some_and(|next| !next.starts_with('-'));
+            if CLAUDE_VALUE_OPTIONS.contains(&name) {
+                if index < args.len() {
+                    index += 1;
+                }
+            } else if CLAUDE_VARIADIC_OPTIONS.contains(&name) {
+                while is_value(index) {
+                    index += 1;
+                }
+            } else if CLAUDE_OPTIONAL_VALUE_OPTIONS.contains(&name) && is_value(index) {
+                index += 1;
+            }
+        }
+        parsed.push(ClaudeArg {
+            option: Some(name),
+            tokens: &args[start..index],
+        });
+    }
+    parsed
+}
+
+fn claude_option_value<'a>(arg: &ClaudeArg<'a>) -> Option<&'a str> {
+    match arg.tokens {
+        [token] => token.split_once('=').map(|(_, value)| value),
+        [_, value] => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+/// The session a Claude launch is bound to, when its args name one exactly:
+/// `--session-id <uuid>`, or `--resume <uuid>` without `--fork-session`. A
+/// resume search term, `--continue`, or a fork leaves the session unknown.
+fn claude_session_from_launch_args(args: &[String]) -> Option<PersistedAgentSession> {
+    let parsed = claude_args(args);
+    if parsed
+        .iter()
+        .any(|arg| arg.option == Some("--fork-session"))
+    {
+        return None;
+    }
+    let session_id = parsed.iter().rev().find_map(|arg| {
+        matches!(arg.option, Some("--session-id" | "-r" | "--resume"))
+            .then(|| claude_option_value(arg))
+            .flatten()
+    })?;
+    uuid::Uuid::parse_str(session_id).ok()?;
+    Some(PersistedAgentSession {
+        source: "herdr:claude".into(),
+        agent: "claude".into(),
+        session_ref: AgentSessionRef::id(session_id)?,
+    })
+}
+
+/// Whether a Claude launch leaves its session to Claude to choose. Such a
+/// launch is given a fresh `--session-id` so the pane knows which conversation
+/// to resume after a restart without depending on a hook report.
+pub fn claude_launch_needs_session_id(args: &[String]) -> bool {
+    !claude_args(args).iter().any(|arg| {
+        arg.option
+            .is_some_and(|option| CLAUDE_SESSION_OPTIONS.contains(&option))
+    })
+}
+
+pub fn new_claude_session_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// The Claude launch args worth replaying on resume: every option with its
+/// values, minus the session options and minus positional tokens, since a
+/// positional prompt was already sent to the conversation being resumed.
+pub fn claude_resume_launch_args(args: &[String]) -> Vec<String> {
+    claude_args(args)
+        .into_iter()
+        .filter(|arg| {
+            arg.option
+                .is_some_and(|option| !CLAUDE_SESSION_OPTIONS.contains(&option))
+        })
+        .flat_map(|arg| arg.tokens.iter().cloned())
+        .collect()
 }
 
 pub fn normalize_session_start_source(value: Option<String>) -> Option<String> {
@@ -131,6 +331,21 @@ pub fn session_ref_from_snapshot(
         agent: agent.to_string(),
         session_ref,
     })
+}
+
+/// A resume plan that also replays the launch args saved with the pane. Only
+/// Claude records launch args, so every other agent gets the plain plan.
+pub fn plan_with_launch_args(
+    source: &str,
+    agent: &str,
+    session_ref: &AgentSessionRef,
+    launch_args: &[String],
+) -> Option<AgentResumePlan> {
+    let mut plan = plan(source, agent, session_ref)?;
+    if (source, agent) == ("herdr:claude", "claude") {
+        plan.argv.extend(claude_resume_launch_args(launch_args));
+    }
+    Some(plan)
 }
 
 pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<AgentResumePlan> {
@@ -353,6 +568,148 @@ mod tests {
             ]
         )
         .is_none());
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    const CLAUDE_SESSION: &str = "0f6c1d2e-3b4a-4c5d-8e9f-a0b1c2d3e4f5";
+
+    #[test]
+    fn claude_launch_without_session_needs_generated_id() {
+        assert!(claude_launch_needs_session_id(&[]));
+        assert!(claude_launch_needs_session_id(&args(&[
+            "--dangerously-skip-permissions",
+            "--permission-mode",
+            "plan",
+        ])));
+        assert!(!claude_launch_needs_session_id(&args(&[
+            "--session-id",
+            CLAUDE_SESSION
+        ])));
+        assert!(!claude_launch_needs_session_id(&args(&[
+            "--resume",
+            CLAUDE_SESSION
+        ])));
+        assert!(!claude_launch_needs_session_id(&args(&["-r"])));
+        assert!(!claude_launch_needs_session_id(&args(&["--continue"])));
+        assert!(!claude_launch_needs_session_id(&args(&["-c"])));
+        // A prompt that merely looks like a flag value is not a session option.
+        assert!(claude_launch_needs_session_id(&args(&[
+            "--model", "--resume", "hello"
+        ])));
+
+        let generated = new_claude_session_id();
+        assert!(uuid::Uuid::parse_str(&generated).is_ok());
+        assert_ne!(generated, new_claude_session_id());
+    }
+
+    #[test]
+    fn claude_launch_session_comes_from_session_id_or_resume() {
+        for launch in [
+            args(&["--session-id", CLAUDE_SESSION]),
+            args(&["--resume", CLAUDE_SESSION, "--dangerously-skip-permissions"]),
+            args(&["-r", CLAUDE_SESSION]),
+            args(&[&format!("--resume={CLAUDE_SESSION}")]),
+            args(&[&format!("--session-id={CLAUDE_SESSION}")]),
+        ] {
+            let session = persisted_session_from_launch_args(crate::detect::Agent::Claude, &launch)
+                .unwrap_or_else(|| panic!("{launch:?} should name a session"));
+            assert_eq!(session.source, "herdr:claude");
+            assert_eq!(session.agent, "claude");
+            assert_eq!(
+                session.session_ref,
+                AgentSessionRef::id(CLAUDE_SESSION).unwrap()
+            );
+        }
+
+        for launch in [
+            Vec::new(),
+            args(&["--continue"]),
+            args(&["--resume"]),
+            args(&["--resume", "search term"]),
+            args(&["--resume", CLAUDE_SESSION, "--fork-session"]),
+            args(&["--", "--session-id", CLAUDE_SESSION]),
+        ] {
+            assert!(
+                persisted_session_from_launch_args(crate::detect::Agent::Claude, &launch).is_none(),
+                "{launch:?} should not name a session"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_resume_launch_args_drop_session_options_and_prompts() {
+        assert_eq!(
+            claude_resume_launch_args(&args(&[
+                "--dangerously-skip-permissions",
+                "--permission-mode",
+                "acceptEdits",
+                "--session-id",
+                CLAUDE_SESSION,
+                "--add-dir",
+                "/a",
+                "/b",
+                "--model=opus",
+                "say hello",
+            ])),
+            args(&[
+                "--dangerously-skip-permissions",
+                "--permission-mode",
+                "acceptEdits",
+                "--add-dir",
+                "/a",
+                "/b",
+                "--model=opus",
+            ])
+        );
+        assert_eq!(
+            claude_resume_launch_args(&args(&["-r", CLAUDE_SESSION, "--", "--prompt-like"])),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn claude_plan_replays_launch_args_after_resume() {
+        let session = AgentSessionRef::id(CLAUDE_SESSION).unwrap();
+        assert_eq!(
+            plan_with_launch_args(
+                "herdr:claude",
+                "claude",
+                &session,
+                &args(&[
+                    "--dangerously-skip-permissions",
+                    "--session-id",
+                    CLAUDE_SESSION
+                ]),
+            )
+            .unwrap()
+            .argv,
+            args(&[
+                "claude",
+                "--resume",
+                CLAUDE_SESSION,
+                "--dangerously-skip-permissions"
+            ])
+        );
+        assert_eq!(
+            plan_with_launch_args("herdr:claude", "claude", &session, &[])
+                .unwrap()
+                .dedupe_key,
+            plan("herdr:claude", "claude", &session).unwrap().dedupe_key
+        );
+        assert_eq!(
+            plan_with_launch_args(
+                "herdr:codex",
+                "codex",
+                &AgentSessionRef::id("codex-session").unwrap(),
+                &args(&["--dangerously-skip-permissions"]),
+            )
+            .unwrap()
+            .argv,
+            args(&["codex", "resume", "codex-session"])
+        );
     }
 
     #[test]

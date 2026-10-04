@@ -147,6 +147,10 @@ pub struct TerminalState {
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
     managed_agent_launch_session: Option<crate::agent_resume::PersistedAgentSession>,
+    /// Launch args a resume replays after the session flag, e.g.
+    /// `--dangerously-skip-permissions`. Recorded at `agent start` and carried
+    /// across restores; cleared with the agent name.
+    pub agent_launch_args: Option<Vec<String>>,
     hook_report_sequences: HashMap<String, u64>,
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
@@ -183,6 +187,7 @@ impl TerminalState {
             agent_name_owner: None,
             managed_agent: None,
             managed_agent_launch_session: None,
+            agent_launch_args: None,
             hook_report_sequences: HashMap::new(),
             suppressed_full_lifecycle_hook_reports: HashMap::new(),
             stale_full_lifecycle_hook_sessions: HashMap::new(),
@@ -2089,6 +2094,7 @@ impl TerminalState {
         self.agent_name = None;
         self.agent_name_owner = None;
         self.managed_agent = None;
+        self.agent_launch_args = None;
     }
 
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
@@ -4570,6 +4576,46 @@ mod tests {
                 "{session_start_source} should store the replacement session"
             );
         }
+    }
+
+    #[test]
+    fn claude_clear_report_replaces_launch_assigned_session() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.begin_managed_agent(
+            "worker".into(),
+            Agent::Claude,
+            now,
+            Duration::ZERO,
+            Duration::from_secs(10),
+        );
+        terminal.set_managed_agent_launch_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("launch-session").unwrap(),
+        });
+        terminal.agent_launch_args = Some(vec!["--dangerously-skip-permissions".into()]);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal.reconcile_managed_agent_at(now, false));
+
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:claude".into(),
+                "claude".into(),
+                crate::agent_resume::AgentSessionRef::id("cleared-session"),
+                Some(1),
+                Some("clear".into()),
+            )
+            .expect("a /clear report should replace the launch session");
+
+        assert_eq!(
+            terminal
+                .current_session_identity_for_persistence()
+                .map(|(_, _, _, value)| value),
+            Some("cleared-session".to_string())
+        );
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+        assert!(terminal.agent_launch_args.is_some());
     }
 
     #[test]
