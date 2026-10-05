@@ -308,15 +308,14 @@ fn workspace_navigation_respects_each_machines_visible_worktree_groups() {
         }
         state.compose(cols, 28).unwrap();
         enter_navigation(&mut state);
-        let local = if compact && !unavailable {
-            ["ws_2", "ws_3"]
-        } else {
-            ["ws_3", "ws_2"]
-        };
+        // One order everywhere: the grouped order the merged tree draws (a
+        // worktree group's linked child right after its head), in the compact
+        // strip as in the expanded sidebar. The compact strip used to fall back
+        // to raw snapshot order, which put each machine's spaces in a
+        // different order from the tree the operator reads.
+        let local = ["ws_3", "ws_2"];
         let remote_ids: &[&str] = if !show_child {
             &["ws_1", "ws_2"]
-        } else if compact {
-            &["ws_1", "ws_2", "ws_3"]
         } else {
             &["ws_1", "ws_3", "ws_2"]
         };
