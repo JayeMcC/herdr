@@ -46,21 +46,6 @@ pub(super) fn tier_key(tier: &str) -> String {
     format!("space:{tier}")
 }
 
-/// Merge every machine's spaces into one tier tree.
-///
-/// - A group forms under one heading for a tier name when that tier has a
-///   `<tier>/<child>` space on any machine, or when two or more spaces (on any
-///   machines) carry the bare tier name. That matches the single-machine
-///   sidebar, which derives a `work` heading for a lone `work/o-a`. A space
-///   labelled exactly the tier name is shown as a child, so two machines'
-///   `work` spaces both stay reachable under the one heading.
-/// - Any other space renders as a plain top-level row, as with one machine.
-/// - Groups and lone spaces keep the order of their first appearance, scanning
-///   machines in catalog order (Local first), so adding a machine never
-///   reorders the Air's existing rows.
-/// - Within a group, members keep that same order.
-/// - Every space appears exactly once, collapsed or not, unless its group is
-///   collapsed, in which case only the focused member (if any) stays visible.
 /// `federated_rows_with` with no remote worktree collapses: the shape the
 /// tests assert. Production callers pass the remote sets.
 #[cfg(test)]
@@ -72,11 +57,26 @@ pub(super) fn federated_rows(
     federated_rows_with(endpoints, collapsed, &HashMap::new(), focused)
 }
 
-/// `federated_rows`, with each REMOTE machine's own collapse set for its
-/// worktree groups (a repo checkout with its linked worktrees under it). Those
-/// stay per machine: a worktree group belongs to one machine's disk, so it
-/// keeps that machine's own single-machine rows inside the merged tree, and its
-/// collapse state is that machine's, as before.
+/// Merge every machine's spaces into one tier tree.
+///
+/// - A group forms under one heading for a label that has a `<label>/<child>`
+///   space on any machine (the derived heading one machine already draws), or
+///   for a TIER name (assistant, infra, meta, work) present on two or more
+///   machines. A space labelled exactly the heading is shown as a child, so two
+///   machines' `infra` spaces both stay reachable under the one heading.
+/// - A worktree group (a repo checkout heading its linked worktrees) keeps its
+///   own machine's rows, order and collapse state, standing where its head is.
+/// - Any other space renders as a plain top-level row, as with one machine.
+/// - Groups and lone spaces keep the order of their first appearance, scanning
+///   machines in catalog order (Local first), so adding a machine never
+///   reorders the Air's existing rows.
+/// - Within a group, members keep that same order.
+/// - Every space appears exactly once, collapsed or not, unless its group is
+///   collapsed, in which case only the focused member (if any) stays visible.
+///
+/// `collapsed` is the local collapse set (tier headings and the Air's worktree
+/// groups); `remote_collapsed` holds each remote machine's set for its own
+/// worktree groups.
 pub(super) fn federated_rows_with<'a>(
     endpoints: &'a [ClientShellEndpoint],
     collapsed: &HashSet<String>,
