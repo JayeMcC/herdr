@@ -6922,3 +6922,95 @@ fn no_handle_internal_event_bypass_in_module() {
         bypass_lines.join("\n  ")
     );
 }
+
+#[tokio::test]
+async fn stats_latency_server_reports_pane_input_through_the_api() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("latency");
+    let pane_id = workspace.tabs[0].root_pane;
+    let (runtime, mut input_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    workspace.insert_test_runtime(pane_id, runtime);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
+    server.clients.insert(
+        11,
+        ClientConnection::new_with_mode(
+            ClientConnectionMode::ClientShell,
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            None,
+        ),
+    );
+    server.foreground_client_id = Some(11);
+
+    let arrived = std::time::Instant::now();
+    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: 11,
+        arrived,
+        pane_id: public_pane_id,
+        events: vec![crate::protocol::ClientPaneInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Enter,
+            modifiers: 0,
+            kind: crate::protocol::ClientKeyKind::Press,
+            repeat_count: 1,
+            shifted_codepoint: None,
+            generated_text: None,
+            tracks_release: false,
+            physical_key_id: None,
+            windows_record: None,
+        }],
+    });
+    assert!(!input_rx
+        .try_recv()
+        .expect("enter reaches the PTY")
+        .is_empty());
+
+    // The frame hook the render paths call once a frame carrying the pane is queued.
+    server.latency.set_frame_sources([pane_id.raw()]);
+    // Stamp the frame after the PTY handoff, as the render paths do.
+    let framed = std::time::Instant::now();
+    server
+        .latency
+        .frame_sent(11, framed, crate::latency::log_if_slow);
+    server.latency.clear_frame_sources();
+
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: api::schema::Request {
+            id: "latency".into(),
+            method: api::schema::Method::ServerLatency(api::schema::EmptyParams::default()),
+        },
+        respond_to,
+        response_write_complete: None,
+        stream_active: None,
+    });
+    let response: api::schema::SuccessResponse =
+        serde_json::from_str(&response_rx.recv().unwrap()).unwrap();
+    let api::schema::ResponseResult::Latency { latency } = response.result else {
+        panic!("expected latency report");
+    };
+    let enter = latency
+        .inputs
+        .kinds
+        .iter()
+        .find(|row| {
+            row.kind == crate::latency::InputKind::Enter
+                && row.segment == crate::latency::Segment::Total
+        })
+        .unwrap_or_else(|| panic!("enter total row missing: {latency:?}"));
+    assert_eq!(enter.summary.count, 1);
+    let elapsed_us = framed.duration_since(arrived).as_micros() as u64;
+    // Each stamp truncates to whole microseconds from the meter epoch, and the
+    // histogram reports its largest sample exactly.
+    assert!(
+        enter.summary.max_us <= elapsed_us + 1,
+        "{enter:?} vs {elapsed_us}"
+    );
+    assert_eq!(latency.inputs.panes[0].pane, pane_id.raw());
+    assert_eq!(latency.inputs.in_flight, 0);
+    shutdown_test_runtimes(&mut server);
+}

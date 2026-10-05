@@ -3084,6 +3084,17 @@ impl HeadlessServer {
         }
 
         match &msg.request.method {
+            api::schema::Method::ServerLatency(_) => {
+                let response = serde_json::to_string(&api::schema::SuccessResponse {
+                    id: msg.request.id.clone(),
+                    result: api::schema::ResponseResult::Latency {
+                        latency: Box::new(self.latency.server_latency(Instant::now())),
+                    },
+                })
+                .unwrap_or_else(|_| "{}".to_string());
+                let _ = msg.respond_to.send(response);
+                return false;
+            }
             api::schema::Method::ClientWindowTitleSet(params) => {
                 let response = self.handle_client_window_title_api(
                     msg.request.id.clone(),

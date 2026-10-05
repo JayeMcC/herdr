@@ -11,10 +11,6 @@
 //! on the per-input path allocates: in-flight inputs, histograms and the pane
 //! table are fixed-size arrays sized once at startup.
 
-// The report side (`report`, names, `SLOW_INPUT`) is read by `twodr stats
-// latency`, which lands in the next change; remove this allow with it.
-#![allow(dead_code)]
-
 use std::time::{Duration, Instant};
 
 pub(crate) mod phase;
@@ -41,7 +37,17 @@ const PANE_SLOTS: usize = 32;
 const FRAME_SOURCE_CAP: usize = 64;
 const PENDING_TTL_US: u64 = 10_000_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum InputKind {
     Key,
@@ -89,7 +95,9 @@ impl InputKind {
 }
 
 /// One stage of an input's trip through the server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Segment {
     /// Transport thread receipt to server loop pickup.
@@ -109,15 +117,6 @@ impl Segment {
         Segment::Present,
         Segment::Total,
     ];
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Segment::Queue => "queue",
-            Segment::Handle => "handle",
-            Segment::Present => "present",
-            Segment::Total => "total",
-        }
-    }
 }
 
 /// Classifies one targeted pane input batch. Releases, mouse motion and clicks
@@ -273,7 +272,9 @@ impl Histogram {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct Summary {
     pub(crate) count: u64,
     pub(crate) p50_us: u64,
@@ -556,7 +557,9 @@ impl LatencyMeter {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct KindRow {
     pub(crate) kind: InputKind,
     pub(crate) segment: Segment,
@@ -565,14 +568,18 @@ pub(crate) struct KindRow {
 }
 
 /// End-to-end (`total`) latency for one pane.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct PaneRow {
     pub(crate) pane: u32,
     #[serde(flatten)]
     pub(crate) summary: Summary,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct LatencyReport {
     pub(crate) window_secs: u64,
     pub(crate) kinds: Vec<KindRow>,
@@ -584,6 +591,44 @@ pub(crate) struct LatencyReport {
     pub(crate) dropped: u64,
     /// Inputs that produced no frame within ten seconds (no echo, hidden pane).
     pub(crate) unframed: u64,
+}
+
+/// Everything `server.latency` returns: input latency and phase timing.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub(crate) struct ServerLatency {
+    #[serde(flatten)]
+    pub(crate) inputs: LatencyReport,
+    pub(crate) phases: Vec<phase::PhaseRow>,
+}
+
+impl LatencyMeter {
+    pub(crate) fn server_latency(&self, now: Instant) -> ServerLatency {
+        ServerLatency {
+            inputs: self.report(now),
+            phases: phase::PHASES.report(phase::us_since_epoch(now)),
+        }
+    }
+}
+
+/// Logs one `latency.slow` line for an input slower than [`SLOW_INPUT`].
+pub(crate) fn log_if_slow(completed: &Completed) {
+    if completed.total_us < SLOW_INPUT.as_micros() as u64 {
+        return;
+    }
+    let pane = (completed.pane != UNKNOWN_PANE).then_some(completed.pane);
+    tracing::warn!(
+        event = "latency.slow",
+        kind = completed.kind.name(),
+        pane = ?pane,
+        client_id = completed.client_id,
+        total_ms = completed.total_us / 1_000,
+        queue_ms = completed.queue_us / 1_000,
+        handle_ms = completed.handle_us / 1_000,
+        present_ms = completed.present_us / 1_000,
+        "input was slow to reach the screen"
+    );
 }
 
 #[cfg(test)]

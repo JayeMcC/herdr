@@ -42,6 +42,9 @@ pub struct ErrorBody {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseResult {
+    Latency {
+        latency: Box<crate::latency::ServerLatency>,
+    },
     Pong {
         version: String,
         protocol: u32,

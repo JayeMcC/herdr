@@ -4871,6 +4871,22 @@
         {
           "properties": {
             "method": {
+              "const": "server.latency",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "notification.show",
               "type": "string"
             },
@@ -7606,6 +7622,16 @@
           ],
           "type": "string"
         },
+        "InputKind": {
+          "enum": [
+            "key",
+            "burst",
+            "paste",
+            "scroll",
+            "enter"
+          ],
+          "type": "string"
+        },
         "InstalledPluginInfo": {
           "properties": {
             "actions": {
@@ -7787,6 +7813,45 @@
           },
           "required": [
             "messages"
+          ],
+          "type": "object"
+        },
+        "KindRow": {
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/InputKind"
+            },
+            "max_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "p50_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "p95_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "segment": {
+              "$ref": "#/schemas/success_response/$defs/Segment"
+            }
+          },
+          "required": [
+            "kind",
+            "segment",
+            "count",
+            "p50_us",
+            "p95_us",
+            "max_us"
           ],
           "type": "object"
         },
@@ -8537,6 +8602,44 @@
           ],
           "type": "object"
         },
+        "PaneRow": {
+          "description": "End-to-end (`total`) latency for one pane.",
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "p50_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "p95_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane",
+            "count",
+            "p50_us",
+            "p95_us",
+            "max_us"
+          ],
+          "type": "object"
+        },
         "PaneScrollInfo": {
           "properties": {
             "max_offset_from_bottom": {
@@ -8695,6 +8798,114 @@
             "focused_pane_id",
             "zoomed",
             "layout"
+          ],
+          "type": "object"
+        },
+        "Phase": {
+          "oneOf": [
+            {
+              "const": "events",
+              "description": "Draining internal app events.",
+              "type": "string"
+            },
+            {
+              "const": "api",
+              "description": "Handling API socket requests.",
+              "type": "string"
+            },
+            {
+              "const": "client_events",
+              "description": "Handling client transport events (input, resize, connect).",
+              "type": "string"
+            },
+            {
+              "const": "scheduled",
+              "description": "Scheduled tasks (saves, git refresh, timers).",
+              "type": "string"
+            },
+            {
+              "const": "render",
+              "description": "One whole render attempt, all clients.",
+              "type": "string"
+            },
+            {
+              "const": "snapshot",
+              "description": "Building the client shell session snapshot.",
+              "type": "string"
+            },
+            {
+              "const": "cwd",
+              "description": "Reading one pane's working directories.",
+              "type": "string"
+            },
+            {
+              "const": "agent_info",
+              "description": "Building one pane's agent info for the snapshot.",
+              "type": "string"
+            },
+            {
+              "const": "detect",
+              "description": "One background agent-detection pass for one pane (worker thread).",
+              "type": "string"
+            },
+            {
+              "const": "layout",
+              "description": "Tab surface geometry.",
+              "type": "string"
+            },
+            {
+              "const": "draw",
+              "description": "Drawing one pane into the virtual frame.",
+              "type": "string"
+            },
+            {
+              "const": "send",
+              "description": "Serializing and queuing one client's frame.",
+              "type": "string"
+            }
+          ]
+        },
+        "PhaseRow": {
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_pane": {
+              "description": "The pane that took longest in this phase within the window, if the\nphase is per pane.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "p50_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "p95_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "phase": {
+              "$ref": "#/schemas/success_response/$defs/Phase"
+            }
+          },
+          "required": [
+            "phase",
+            "count",
+            "p50_us",
+            "p95_us",
+            "max_us"
           ],
           "type": "object"
         },
@@ -9282,6 +9493,22 @@
         },
         "ResponseResult": {
           "oneOf": [
+            {
+              "properties": {
+                "latency": {
+                  "$ref": "#/schemas/success_response/$defs/ServerLatency"
+                },
+                "type": {
+                  "const": "latency",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "latency"
+              ],
+              "type": "object"
+            },
             {
               "properties": {
                 "capabilities": {
@@ -10635,6 +10862,31 @@
             }
           ]
         },
+        "Segment": {
+          "description": "One stage of an input's trip through the server.",
+          "oneOf": [
+            {
+              "const": "queue",
+              "description": "Transport thread receipt to server loop pickup.",
+              "type": "string"
+            },
+            {
+              "const": "handle",
+              "description": "Server loop pickup to PTY writer handoff.",
+              "type": "string"
+            },
+            {
+              "const": "present",
+              "description": "PTY writer handoff to the first frame queued for the client.",
+              "type": "string"
+            },
+            {
+              "const": "total",
+              "description": "Transport thread receipt to the first frame queued for the client.",
+              "type": "string"
+            }
+          ]
+        },
         "ServerCapabilities": {
           "properties": {
             "detached_server_daemon": {
@@ -10666,6 +10918,62 @@
           },
           "required": [
             "live_handoff"
+          ],
+          "type": "object"
+        },
+        "ServerLatency": {
+          "description": "Everything `server.latency` returns: input latency and phase timing.",
+          "properties": {
+            "dropped": {
+              "description": "In-flight inputs evicted because more than the tracked capacity were\nwaiting at once.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_flight": {
+              "description": "Inputs written to a PTY and still waiting for their frame.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kinds": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/KindRow"
+              },
+              "type": "array"
+            },
+            "panes": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/PaneRow"
+              },
+              "type": "array"
+            },
+            "phases": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/PhaseRow"
+              },
+              "type": "array"
+            },
+            "unframed": {
+              "description": "Inputs that produced no frame within ten seconds (no echo, hidden pane).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "window_secs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "window_secs",
+            "kinds",
+            "panes",
+            "in_flight",
+            "dropped",
+            "unframed",
+            "phases"
           ],
           "type": "object"
         },

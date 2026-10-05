@@ -19,7 +19,9 @@ use super::{bucket_index, bucket_upper, Summary, BUCKETS, SLOT_SECS, UNKNOWN_PAN
 /// A loop-thread phase slower than this logs one line naming its pane.
 pub(crate) const SLOW_PHASE: Duration = Duration::from_millis(50);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Phase {
     /// Draining internal app events.
@@ -138,7 +140,9 @@ pub(crate) struct PhaseStats {
     slots: [[AtomicSlot; WINDOW_SLOTS]; Phase::ALL.len()],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct PhaseRow {
     pub(crate) phase: Phase,
     #[serde(flatten)]
