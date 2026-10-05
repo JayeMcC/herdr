@@ -235,6 +235,31 @@ fn status_color(
     }
 }
 
+/// Display token a lane pause hook sets on a pane; any non-empty value means
+/// the lane is paused.
+const PAUSED_TOKEN: &str = "paused";
+
+fn agent_paused<'a>(tokens: impl IntoIterator<Item = &'a (String, String)>) -> bool {
+    tokens
+        .into_iter()
+        .any(|(key, value)| key == PAUSED_TOKEN && !value.is_empty())
+}
+
+/// Colour of one agent's status dot: blue while the pane carries the `paused`
+/// token, the state colour otherwise. Only the colour changes; the glyph still
+/// follows the state.
+fn agent_dot_color(
+    status: crate::api::schema::AgentStatus,
+    paused: bool,
+    palette: &Palette,
+) -> ratatui::style::Color {
+    if paused {
+        palette.blue
+    } else {
+        status_color(status, palette)
+    }
+}
+
 fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
     match palette.panel_bg {
         ratatui::style::Color::Reset => palette.surface_dim,

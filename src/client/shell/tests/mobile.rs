@@ -673,3 +673,70 @@ fn mobile_switcher_scroll_close_and_width_transition_clear_mobile_hits() {
     assert!(state.hits.mobile_close.is_empty());
     assert!(state.hits.mobile_targets.is_empty());
 }
+
+/// Foreground of the status dot on the mobile switcher's `pane_1` agent line.
+fn paused_dot_mobile_fg(tokens: Vec<(String, String)>) -> u32 {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut projected = snapshot();
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("lane".into()),
+        parent_agent: None,
+        display_agent: Some("claude".into()),
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Working,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens,
+        focused: true,
+    }];
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(44, 20).expect("mobile header");
+    let switch = state.hits.mobile_switch;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: switch.x,
+        row: switch.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let frame = state.compose(44, 20).expect("mobile switcher");
+    let rect = state
+        .hits
+        .mobile_targets
+        .iter()
+        .find_map(|(rect, target)| {
+            matches!(
+                target,
+                ClientMobileTarget::Agent { pane_id, .. } if pane_id == "pane_1"
+            )
+            .then_some(*rect)
+        })
+        .expect("agent hit");
+    let width = usize::from(frame.width);
+    let start = usize::from(rect.y) * width;
+    frame.cells[start..start + width]
+        .iter()
+        .find(|cell| cell.symbol == "●")
+        .expect("status dot on the agent line")
+        .fg
+}
+
+#[test]
+fn paused_dot_mobile_draws_blue_while_token_is_set_and_state_colour_once_cleared() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+
+    assert_eq!(
+        paused_dot_mobile_fg(vec![("paused".into(), "1".into())]),
+        crate::protocol::color_to_u32(palette.blue)
+    );
+    assert_eq!(
+        paused_dot_mobile_fg(Vec::new()),
+        crate::protocol::color_to_u32(palette.yellow)
+    );
+}

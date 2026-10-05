@@ -13,6 +13,8 @@ use super::*;
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
+    /// The pane carries the `paused` token: its dot draws blue.
+    pub(super) paused: bool,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
     /// Nesting depth in tree mode; 0 in every other mode, so the existing
@@ -683,6 +685,7 @@ pub(super) fn agent_row(
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,
+        paused: agent_paused(&agent.tokens),
         focused: agent.focused,
         rows,
         depth: 0,
@@ -835,7 +838,7 @@ pub(super) fn render_agent_row(
     let secondary = Style::default().fg(palette.overlay0);
     let icon = (
         status_icon(row.status, config.status_indicators),
-        Style::default().fg(status_color(row.status, palette)),
+        Style::default().fg(agent_dot_color(row.status, row.paused, palette)),
     );
     let rows = if row.rows.is_empty() {
         vec![vec![crate::ui::ResolvedToken {

@@ -710,7 +710,11 @@ fn mobile_items(
                                 .fg(if endpoint.stale() {
                                     palette.overlay0
                                 } else {
-                                    status_color(agent.agent_status, palette)
+                                    agent_dot_color(
+                                        agent.agent_status,
+                                        agent_paused(&agent.tokens),
+                                        palette,
+                                    )
                                 })
                                 .bg(background)
                                 .add_modifier(dim),
