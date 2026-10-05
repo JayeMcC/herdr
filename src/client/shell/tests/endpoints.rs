@@ -323,16 +323,23 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
             .find(|hit| hit.endpoint_id == remote)
             .unwrap()
             .rect;
+        // A space is pressed then released (a press alone starts a possible
+        // drag); the release activates the remote machine at that space.
         let mut outcome = ClientShellInput::default();
-        state.handle_mouse(
-            crossterm::event::MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: hit.x + 5,
-                row: hit.y,
-                modifiers: KeyModifiers::NONE,
-            },
-            &mut outcome,
-        );
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            state.handle_mouse(
+                crossterm::event::MouseEvent {
+                    kind,
+                    column: hit.x + 5,
+                    row: hit.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut outcome,
+            );
+        }
         assert!(
             matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint { endpoint_id, .. }] if endpoint_id == &remote)
         );
@@ -753,7 +760,10 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("○ Local · local agent"), "frame: {text}");
+    assert!(
+        text.contains("○ local agent") && !text.contains("Local · "),
+        "frame: {text}"
+    );
     assert!(text.contains("× Build · remote agent"), "frame: {text}");
     assert!(text.contains("grouped"), "frame: {text}");
     let toggle = state.hits.agent_sort_toggle;
@@ -821,7 +831,10 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
+    assert!(
+        text.contains("local agent") && !text.contains("Local · local agent"),
+        "frame: {text}"
+    );
     assert!(!text.contains("Build · remote agent"), "frame: {text}");
 
     assert!(state.activate_endpoint_projection(&endpoint_id));
@@ -839,7 +852,7 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(!text.contains("Local · local agent"), "frame: {text}");
+    assert!(!text.contains("local agent"), "frame: {text}");
     assert!(text.contains("Build · remote agent"), "frame: {text}");
 }
 
@@ -908,7 +921,10 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
+    assert!(
+        text.contains("local agent") && !text.contains("Local · local agent"),
+        "frame: {text}"
+    );
     assert!(!text.contains("Build · remote idle"), "frame: {text}");
     assert!(text.contains("Build · remote blocked"), "frame: {text}");
 }
@@ -964,7 +980,10 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
+    assert!(
+        text.contains("local agent") && !text.contains("Local · local agent"),
+        "frame: {text}"
+    );
     assert!(text.contains("Build · remote agent"), "frame: {text}");
     // The default view's label is the default sort's: the tree.
     assert!(text.contains("tree"), "frame: {text}");
@@ -1051,7 +1070,10 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local · local agent"), "frame: {text}");
+    assert!(
+        text.contains("local agent") && !text.contains("Local · local agent"),
+        "frame: {text}"
+    );
     assert!(text.contains("Build · remote agent"), "frame: {text}");
 }
 
@@ -1105,7 +1127,7 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
         .join("\n");
     assert!(
         text.find("Build · remote idle").expect("remote row")
-            < text.find("Local · local blocked").expect("local row"),
+            < text.find("local blocked").expect("local row"),
         "frame: {text}"
     );
 
@@ -1231,7 +1253,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     };
     let text = frame_text(&mut state);
     assert!(
-        text.find("Local · local agent").expect("local agent")
+        text.find(" local agent").expect("local agent")
             < text.find("Build · remote agent").expect("remote agent")
     );
 
@@ -1240,7 +1262,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let text = frame_text(&mut state);
     assert!(
         text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+            < text.find(" local agent").expect("local agent")
     );
 
     remote.agents = vec![agent("remote agent", AgentStatus::Idle, 3)];
@@ -1248,7 +1270,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let text = frame_text(&mut state);
     assert!(
         text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
+            < text.find(" local agent").expect("local agent")
     );
     let mut outcome = ClientShellInput::default();
     assert!(
@@ -2352,20 +2374,32 @@ fn a_second_machine_joins_the_tier_tree_and_shows_only_as_a_badge() {
     );
 
     // 3. The remote worker is in the agent tree under its Air orchestrator,
-    //    with the m4 badge; the Air row carries no badge.
-    let lead_row = at("o-dev");
+    //    with the m4 badge on ITS row; the Air row carries no badge. An agent
+    //    row is two lines (state · machine · space, then the name), so the
+    //    badge sits on the line just above the name.
+    let agents_from = at(" agents");
+    let lead_row = agents_from
+        + sidebar[agents_from..]
+            .iter()
+            .position(|line| line.trim() == "o-dev")
+            .unwrap_or_else(|| panic!("o-dev row:\n{joined}"));
     let worker_row = at("w-scratch");
     assert!(
         worker_row > lead_row,
         "worker under its orchestrator:\n{joined}"
     );
     assert!(
-        sidebar[worker_row].contains("m4"),
-        "m4 badge on remote row:\n{joined}"
+        sidebar[worker_row - 1].contains("m4 · "),
+        "m4 badge on the remote row:\n{joined}"
     );
     assert!(
-        !sidebar[lead_row].contains("Local"),
+        !sidebar[lead_row - 1].contains("Local"),
         "no badge for the local machine:\n{joined}"
+    );
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    assert!(
+        indent(&sidebar[worker_row]) > indent(&sidebar[lead_row]),
+        "the worker is nested deeper than its orchestrator:\n{joined}"
     );
 
     // 4. Clicking the remote agent row targets the remote pane.

@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::*;
+use crate::client::endpoint::ClientEndpointId;
 
 /// One row of the merged spaces list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,14 +66,87 @@ pub(super) fn federated_rows<'a>(
     collapsed: &HashSet<String>,
     focused: Option<(usize, usize)>,
 ) -> Vec<FederatedRow> {
+    federated_rows_with(endpoints, collapsed, &HashMap::new(), focused)
+}
+
+/// `federated_rows`, with each REMOTE machine's own collapse set for its
+/// worktree groups (a repo checkout with its linked worktrees under it). Those
+/// stay per machine: a worktree group belongs to one machine's disk, so it
+/// keeps that machine's own single-machine rows inside the merged tree, and its
+/// collapse state is that machine's, as before.
+pub(super) fn federated_rows_with<'a>(
+    endpoints: &'a [ClientShellEndpoint],
+    collapsed: &HashSet<String>,
+    remote_collapsed: &HashMap<ClientEndpointId, HashSet<String>>,
+    focused: Option<(usize, usize)>,
+) -> Vec<FederatedRow> {
+    let empty = HashSet::new();
+    // A space in a worktree group renders through its own machine's
+    // `sidebar_rows`; collect those blocks, keyed by the block's first space.
+    let mut worktree_blocks: HashMap<(usize, usize), Vec<FederatedRow>> = HashMap::new();
+    let mut in_worktree_block: HashSet<(usize, usize)> = HashSet::new();
+    for (endpoint, machine) in endpoints.iter().enumerate() {
+        let Some(snapshot) = machine.snapshot.as_deref() else {
+            continue;
+        };
+        let machine_collapsed = if machine.endpoint_id.is_local() {
+            collapsed
+        } else {
+            remote_collapsed.get(&machine.endpoint_id).unwrap_or(&empty)
+        };
+        let rows = super::sidebar::sidebar_rows(snapshot, machine_collapsed);
+        let mut block: Option<((usize, usize), Vec<FederatedRow>)> = None;
+        let flush = |block: &mut Option<((usize, usize), Vec<FederatedRow>)>,
+                     blocks: &mut HashMap<(usize, usize), Vec<FederatedRow>>| {
+            if let Some((start, rows)) = block.take() {
+                blocks.insert(start, rows);
+            }
+        };
+        for row in rows {
+            let super::sidebar::SidebarRow::Workspace(entry) = row else {
+                flush(&mut block, &mut worktree_blocks);
+                continue;
+            };
+            let workspace = &snapshot.workspaces[entry.index];
+            if workspace.worktree.is_none()
+                || !super::sidebar::in_worktree_group(snapshot, entry.index)
+            {
+                flush(&mut block, &mut worktree_blocks);
+                continue;
+            }
+            if !entry.indented {
+                flush(&mut block, &mut worktree_blocks);
+                block = Some(((endpoint, entry.index), Vec::new()));
+            }
+            if let Some((_, rows)) = block.as_mut() {
+                rows.push(FederatedRow::Workspace {
+                    endpoint,
+                    index: entry.index,
+                    indented: entry.indented,
+                });
+            }
+        }
+        flush(&mut block, &mut worktree_blocks);
+        for index in 0..snapshot.workspaces.len() {
+            if super::sidebar::in_worktree_group(snapshot, index) {
+                in_worktree_block.insert((endpoint, index));
+            }
+        }
+    }
+
     // Every (endpoint, workspace) in catalog order, and the tier it groups by.
+    // A worktree-group space never groups by tier: its block stands where its
+    // head sits, as it does on one machine.
     let mut spaces: Vec<(usize, usize, Option<&'a str>)> = Vec::new();
     for (endpoint, machine) in endpoints.iter().enumerate() {
         let Some(snapshot) = machine.snapshot.as_deref() else {
             continue;
         };
         for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-            spaces.push((endpoint, index, tier_of(&workspace.label)));
+            let tier = (!in_worktree_block.contains(&(endpoint, index)))
+                .then(|| tier_of(&workspace.label))
+                .flatten();
+            spaces.push((endpoint, index, tier));
         }
     }
     let mut members: HashMap<&'a str, usize> = HashMap::new();
@@ -98,6 +172,12 @@ pub(super) fn federated_rows<'a>(
     let mut rows = Vec::new();
     let mut emitted: HashSet<&'a str> = HashSet::new();
     for &(endpoint, index, tier) in &spaces {
+        if in_worktree_block.contains(&(endpoint, index)) {
+            if let Some(block) = worktree_blocks.remove(&(endpoint, index)) {
+                rows.extend(block);
+            }
+            continue;
+        }
         let Some(tier) = grouped(tier) else {
             rows.push(FederatedRow::Workspace {
                 endpoint,

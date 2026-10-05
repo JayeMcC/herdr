@@ -24,17 +24,24 @@ pub(super) fn render_collapsed(
     let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
     // Collapsed: every machine's spaces as one numbered strip, in the merged
     // tier order and with no machine rows, so the narrow sidebar never
-    // re-groups by machine either. Nothing is collapsed here: the strip lists
-    // every space so each stays one click away.
-    let spaces = super::federated_tree::federated_rows(state.endpoints, &HashSet::new(), None)
-        .into_iter()
-        .filter_map(|row| match row {
-            super::federated_tree::FederatedRow::Workspace {
-                endpoint, index, ..
-            } => Some((endpoint, index)),
-            super::federated_tree::FederatedRow::Heading { .. } => None,
-        })
-        .collect::<Vec<_>>();
+    // re-groups by machine either. Group collapse is ignored here, so every
+    // space stays one click away; the ORDER is still the grouped one, the same
+    // order keyboard navigation walks.
+    let no_remote_collapse = HashMap::new();
+    let spaces = super::federated_tree::federated_rows_with(
+        state.endpoints,
+        &HashSet::new(),
+        &no_remote_collapse,
+        None,
+    )
+    .into_iter()
+    .filter_map(|row| match row {
+        super::federated_tree::FederatedRow::Workspace {
+            endpoint, index, ..
+        } => Some((endpoint, index)),
+        super::federated_tree::FederatedRow::Heading { .. } => None,
+    })
+    .collect::<Vec<_>>();
     let reveal = std::mem::take(state.reveal_navigation_workspace);
     let selected_row = reveal
         .then(|| {
@@ -239,27 +246,29 @@ pub(super) fn render_expanded(
                 })
                 .flatten()
         });
-    let rows =
-        super::federated_tree::federated_rows(state.endpoints, state.collapsed_groups, focused)
-            .into_iter()
-            .map(|row| match row {
-                super::federated_tree::FederatedRow::Workspace {
-                    endpoint,
-                    index,
-                    indented,
-                } => Row::Workspace {
-                    endpoint,
-                    entry: WorkspaceEntry {
-                        index,
-                        indented,
-                        last_child: false,
-                    },
-                },
-                super::federated_tree::FederatedRow::Heading { key, label } => {
-                    Row::Heading { key, label }
-                }
-            })
-            .collect::<Vec<_>>();
+    let rows = super::federated_tree::federated_rows_with(
+        state.endpoints,
+        state.collapsed_groups,
+        state.remote_collapsed_groups,
+        focused,
+    )
+    .into_iter()
+    .map(|row| match row {
+        super::federated_tree::FederatedRow::Workspace {
+            endpoint,
+            index,
+            indented,
+        } => Row::Workspace {
+            endpoint,
+            entry: WorkspaceEntry {
+                index,
+                indented,
+                last_child: false,
+            },
+        },
+        super::federated_tree::FederatedRow::Heading { key, label } => Row::Heading { key, label },
+    })
+    .collect::<Vec<_>>();
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -443,9 +452,21 @@ pub(super) fn render_expanded(
                             .add_modifier(Modifier::DIM),
                     );
                 }
-                // In the merged tree only a tier heading collapses: a space
-                // never heads a group here, so it carries no toggle of its own.
-                let group_toggle = None;
+                // A tier heading collapses its tier. A worktree group (a repo
+                // checkout heading its linked worktrees) still collapses on
+                // its own machine, with that machine's collapse set.
+                let group_toggle = super::sidebar::in_worktree_group(snapshot, entry.index)
+                    .then(|| {
+                        super::sidebar::render_parent_group_toggle(
+                            buffer,
+                            rect,
+                            snapshot,
+                            entry.index,
+                            collapsed_groups,
+                            palette,
+                        )
+                    })
+                    .flatten();
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),

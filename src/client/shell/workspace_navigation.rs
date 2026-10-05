@@ -90,7 +90,18 @@ impl ClientShellState {
             } else {
                 &self.collapsed_groups
             };
-            for row in super::federated_tree::federated_rows(&self.endpoints, collapsed, focused) {
+            let empty_remote = HashMap::new();
+            let remote_collapsed = if self.sidebar_collapsed && surface_available {
+                &empty_remote
+            } else {
+                &self.remote_collapsed_groups
+            };
+            for row in super::federated_tree::federated_rows_with(
+                &self.endpoints,
+                collapsed,
+                remote_collapsed,
+                focused,
+            ) {
                 let super::federated_tree::FederatedRow::Workspace {
                     endpoint, index, ..
                 } = row
