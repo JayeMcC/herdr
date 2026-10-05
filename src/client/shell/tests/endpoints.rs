@@ -1332,39 +1332,38 @@ fn clicking_a_remote_space_requests_activation_without_mutating_projection() {
 
 #[test]
 fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
-    for workspace in [true] {
-        let (mut state, remote) = state_with_remote();
-        state.compose(100, 28).unwrap();
-        let mut pending = ClientShellInput::default();
-        assert!(state.activate_endpoint(remote, &mut pending));
-        assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
-        let rect = state
-            .hits
-            .workspaces
-            .iter()
-            .find(|hit| hit.endpoint_id.is_local())
-            .unwrap()
-            .rect;
-        let outcome = state.handle_raw_events(vec![
-            RawInputEvent::Mouse(MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: rect.x + 5,
-                row: rect.y,
-                modifiers: KeyModifiers::empty(),
-            }),
-            RawInputEvent::Mouse(MouseEvent {
-                kind: MouseEventKind::Up(MouseButton::Left),
-                column: rect.x + 5,
-                row: rect.y,
-                modifiers: KeyModifiers::empty(),
-            }),
-        ]);
-        assert!(
-            matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
-            endpoint_id: ClientEndpointId::Local, target,
-        }] if target.is_some() == workspace)
-        );
-    }
+    let workspace = true;
+    let (mut state, remote) = state_with_remote();
+    state.compose(100, 28).unwrap();
+    let mut pending = ClientShellInput::default();
+    assert!(state.activate_endpoint(remote, &mut pending));
+    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    let rect = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local())
+        .unwrap()
+        .rect;
+    let outcome = state.handle_raw_events(vec![
+        RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 5,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        }),
+        RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: rect.x + 5,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        }),
+    ]);
+    assert!(
+        matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
+        endpoint_id: ClientEndpointId::Local, target,
+    }] if target.is_some() == workspace)
+    );
 }
 
 #[test]
@@ -1387,57 +1386,56 @@ fn reconnecting_local_selection_still_reaches_the_runtime() {
 
 #[test]
 fn collapsing_a_tier_heading_hides_every_machines_members_without_switching() {
-    for sidebar_collapsed in [false] {
-        let (mut state, remote_id) = state_with_remote();
-        let mut local = snapshot();
-        local.workspaces[0].label = "work/o-a".into();
-        state.set_snapshot(Box::new(local));
-        let mut remote = snapshot();
-        remote.boot_id = "remote-boot".into();
-        remote.workspaces[0].label = "work/w-1".into();
-        remote.workspaces[0].focused = false;
-        state.set_endpoint_snapshot(&remote_id, Box::new(remote));
-        state.sidebar_collapsed = sidebar_collapsed;
+    let sidebar_collapsed = false;
+    let (mut state, remote_id) = state_with_remote();
+    let mut local = snapshot();
+    local.workspaces[0].label = "work/o-a".into();
+    state.set_snapshot(Box::new(local));
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "work/w-1".into();
+    remote.workspaces[0].focused = false;
+    state.set_endpoint_snapshot(&remote_id, Box::new(remote));
+    state.sidebar_collapsed = sidebar_collapsed;
 
-        state.compose(100, 28).expect("federated frame");
-        let (heading, endpoint, key) = state.hits.space_headings[0].clone();
-        assert_eq!(
-            endpoint,
-            ClientEndpointId::Local,
-            "merged headings collapse locally"
-        );
-        assert_eq!(key, "space:work");
-        let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: heading.x + 2,
-            row: heading.y,
-            modifiers: KeyModifiers::empty(),
-        })]);
-        assert!(
-            outcome.actions.is_empty(),
-            "collapse must not switch machines"
-        );
-        assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
-        assert!(state.collapsed_groups.contains("space:work"));
+    state.compose(100, 28).expect("federated frame");
+    let (heading, endpoint, key) = state.hits.space_headings[0].clone();
+    assert_eq!(
+        endpoint,
+        ClientEndpointId::Local,
+        "merged headings collapse locally"
+    );
+    assert_eq!(key, "space:work");
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: heading.x + 2,
+        row: heading.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(
+        outcome.actions.is_empty(),
+        "collapse must not switch machines"
+    );
+    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert!(state.collapsed_groups.contains("space:work"));
 
-        state.compose(100, 28).expect("collapsed tier");
-        assert!(
-            !state
-                .hits
-                .workspaces
-                .iter()
-                .any(|hit| hit.endpoint_id == remote_id),
-            "the remote member hides with the tier"
-        );
-        assert!(
-            state
-                .hits
-                .workspaces
-                .iter()
-                .any(|hit| hit.endpoint_id.is_local()),
-            "the focused local member stays visible"
-        );
-    }
+    state.compose(100, 28).expect("collapsed tier");
+    assert!(
+        !state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.endpoint_id == remote_id),
+        "the remote member hides with the tier"
+    );
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.endpoint_id.is_local()),
+        "the focused local member stays visible"
+    );
 }
 
 #[test]
