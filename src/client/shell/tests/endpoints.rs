@@ -2381,7 +2381,7 @@ fn a_second_machine_joins_the_tier_tree_and_shows_only_as_a_badge() {
     let lead_row = agents_from
         + sidebar[agents_from..]
             .iter()
-            .position(|line| line.trim() == "o-dev")
+            .position(|line| line.trim_end_matches('│').trim() == "o-dev")
             .unwrap_or_else(|| panic!("o-dev row:\n{joined}"));
     let worker_row = at("w-scratch");
     assert!(

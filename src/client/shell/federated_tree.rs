@@ -149,11 +149,12 @@ pub(super) fn federated_rows_with<'a>(
             spaces.push((endpoint, index, tier));
         }
     }
-    let mut members: HashMap<&'a str, usize> = HashMap::new();
+    // Machines carrying each bare label, and labels with a `<label>/<x>` child.
+    let mut machines_with: HashMap<&'a str, HashSet<usize>> = HashMap::new();
     let mut has_child: HashSet<&'a str> = HashSet::new();
     for (endpoint, index, tier) in &spaces {
         let Some(tier) = tier else { continue };
-        *members.entry(tier).or_default() += 1;
+        machines_with.entry(tier).or_default().insert(*endpoint);
         let label = endpoints[*endpoint]
             .snapshot
             .as_deref()
@@ -162,9 +163,16 @@ pub(super) fn federated_rows_with<'a>(
             has_child.insert(tier);
         }
     }
-    let grouped_tiers: HashSet<&str> = members
+    // A heading forms for a label with a `<label>/<x>` child (the derived
+    // heading one machine already draws), or for a TIER name present on two or
+    // more machines (spec: "a space with the same tier name on two machines
+    // shows as ONE tier entry"). Any other label shared across machines is NOT
+    // merged: it was never a tier, and merging it would reorder the Air's rows.
+    let grouped_tiers: HashSet<&str> = machines_with
         .iter()
-        .filter(|(tier, count)| has_child.contains(*tier) || **count >= 2)
+        .filter(|(tier, machines)| {
+            has_child.contains(*tier) || (TIERS.contains(tier) && machines.len() >= 2)
+        })
         .map(|(tier, _)| *tier)
         .collect();
     let grouped = |tier: Option<&'a str>| tier.filter(|tier| grouped_tiers.contains(tier));
@@ -349,6 +357,26 @@ mod tests {
         assert_eq!(
             shape(&endpoints, &rows),
             vec![row("[work]", false), row("m4:work/w-2", true)]
+        );
+    }
+
+    #[test]
+    fn a_non_tier_label_shared_across_machines_is_not_merged() {
+        // Two machines each with a space named `client-shell`: that was never a
+        // tier, so each stays a plain row where it was, and the Air's rows keep
+        // their place.
+        let endpoints = [
+            machine(ClientEndpointId::Local, "Local", &["client-shell", "meta"]),
+            machine(remote(), "m4", &["client-shell"]),
+        ];
+        let rows = federated_rows(&endpoints, &HashSet::new(), None);
+        assert_eq!(
+            shape(&endpoints, &rows),
+            vec![
+                row("Local:client-shell", false),
+                row("Local:meta", false),
+                row("m4:client-shell", false),
+            ]
         );
     }
 
