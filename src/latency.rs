@@ -895,3 +895,52 @@ mod tests {
         assert!(size < 256 * 1024, "latency meter is {size} bytes");
     }
 }
+
+#[cfg(test)]
+mod overhead {
+    use super::*;
+
+    /// Prints the per-operation cost of the hot path. Run with
+    /// `cargo test --release latency::overhead -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing measurement, not a correctness check"]
+    fn hot_path_cost() {
+        const N: u64 = 2_000_000;
+        let epoch = Instant::now();
+        let mut meter = LatencyMeter::with_epoch(epoch);
+        let started = Instant::now();
+        for i in 0..N {
+            let t = epoch + Duration::from_micros(i * 50);
+            meter.input_applied(1, (i % 30) as u32, InputKind::Key, t, t, t);
+            meter.set_frame_sources([(i % 30) as u32]);
+            meter.frame_sent(1, t + Duration::from_micros(20), |_| {});
+            meter.clear_frame_sources();
+        }
+        let input_ns = started.elapsed().as_nanos() as f64 / N as f64;
+
+        // Every render takes and clears frame sources even with nothing in flight.
+        let started = Instant::now();
+        for i in 0..N {
+            meter.set_frame_sources([(i % 30) as u32]);
+            meter.frame_sent(1, epoch, |_| {});
+            meter.clear_frame_sources();
+        }
+        let idle_render_ns = started.elapsed().as_nanos() as f64 / N as f64;
+
+        watchdog::start_for_loop_thread();
+        let started = Instant::now();
+        for i in 0..N {
+            drop(std::hint::black_box(enter_phase(
+                Phase::Draw,
+                (i % 30) as u32,
+            )));
+        }
+        let phase_ns = started.elapsed().as_nanos() as f64 / N as f64;
+
+        println!(
+            "latency overhead: input stamp+complete {input_ns:.0} ns, idle render hook \
+             {idle_render_ns:.0} ns, phase guard (loop thread) {phase_ns:.0} ns"
+        );
+        assert!(input_ns < 1_000.0, "input path {input_ns} ns");
+    }
+}
