@@ -365,6 +365,20 @@ pub(super) fn send_mark(
     );
 }
 
+impl Drop for ClientRtt {
+    /// The final partial window is logged on exit, so a short session still leaves a record.
+    fn drop(&mut self) {
+        if self
+            .histograms
+            .iter()
+            .any(|histogram| histogram.samples > 0)
+            || self.lost > 0
+        {
+            tracing::info!(target: "twodr::client_rtt", "{} final=true", self.report_line());
+        }
+    }
+}
+
 fn printable_run(data: &[u8]) -> usize {
     if data.contains(&0x1b) {
         return 0;
@@ -499,6 +513,37 @@ mod tests {
         rtt.echo(1);
         rtt.frame_presented(at(start, 5));
         assert_eq!(rtt.summaries()[0].samples, 0);
+    }
+
+    #[test]
+    fn client_rtt_tracker_fits_the_memory_budget() {
+        // Design budget B-01: under 256 KB total, fixed at construction.
+        assert!(std::mem::size_of::<ClientRtt>() < 256 * 1024);
+    }
+
+    /// Prints per-operation cost of the per-input path; run with `--ignored --nocapture`
+    /// in release to check the under-1 us budget.
+    #[test]
+    #[ignore]
+    fn client_rtt_hot_path_cost() {
+        let start = Instant::now();
+        let mut rtt = ClientRtt::new(start);
+        rtt.set_available(true);
+        let iterations = 1_000_000u64;
+        let begin = Instant::now();
+        for index in 0..iterations {
+            let read_at = start + Duration::from_micros(index);
+            let kind = rtt.classify(b"k", read_at);
+            let seq = rtt.input_sent(kind, read_at).unwrap_or(0);
+            rtt.echo(seq);
+            rtt.frame_presented(read_at + Duration::from_micros(500));
+        }
+        let per_input = begin.elapsed().as_nanos() as f64 / iterations as f64;
+        println!("client_rtt per input (classify+mark+echo+present): {per_input:.0} ns");
+        println!(
+            "client_rtt tracker size: {} bytes",
+            std::mem::size_of::<ClientRtt>()
+        );
     }
 
     #[test]
