@@ -15,6 +15,7 @@ mod endpoint_navigation;
 mod endpoint_notices;
 mod endpoint_sidebar;
 mod endpoints;
+mod federated_tree;
 pub(super) use endpoints::*;
 mod global_menu;
 mod graphics;

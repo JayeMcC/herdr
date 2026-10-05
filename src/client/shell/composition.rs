@@ -51,7 +51,6 @@ impl ClientShellState {
         let mut render_state = render::ShellRenderState {
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
-            collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
             remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
@@ -186,7 +185,6 @@ impl ClientShellState {
             render::ShellRenderState {
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,
-                collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,

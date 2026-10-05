@@ -22,32 +22,37 @@ pub(super) fn render_collapsed(
     let palette = &config.palette;
     super::render::render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
-    let mut total_rows = 0usize;
-    let mut selected_row = None;
+    // Collapsed: every machine's spaces as one numbered strip, in the merged
+    // tier order and with no machine rows, so the narrow sidebar never
+    // re-groups by machine either. Nothing is collapsed here: the strip lists
+    // every space so each stays one click away.
+    let spaces = super::federated_tree::federated_rows(state.endpoints, &HashSet::new(), None)
+        .into_iter()
+        .filter_map(|row| match row {
+            super::federated_tree::FederatedRow::Workspace {
+                endpoint, index, ..
+            } => Some((endpoint, index)),
+            super::federated_tree::FederatedRow::Heading { .. } => None,
+        })
+        .collect::<Vec<_>>();
     let reveal = std::mem::take(state.reveal_navigation_workspace);
-    for endpoint in state.endpoints {
-        total_rows += 1;
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
-            continue;
-        }
-        if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            if reveal {
-                if let Some(target) = state
-                    .selected_workspace_id
-                    .filter(|target| target.endpoint_id == endpoint.endpoint_id)
-                {
-                    selected_row = snapshot
-                        .workspaces
-                        .iter()
-                        .position(|workspace| workspace.workspace_id == target.workspace_id)
-                        .map(|index| total_rows + index);
-                }
-            }
-            total_rows += snapshot.workspaces.len();
-        }
-    }
+    let selected_row = reveal
+        .then(|| {
+            state.selected_workspace_id.and_then(|target| {
+                spaces.iter().position(|(endpoint, index)| {
+                    let machine = &state.endpoints[*endpoint];
+                    machine.snapshot.as_deref().is_some_and(|snapshot| {
+                        target.matches(
+                            &machine.endpoint_id,
+                            &snapshot.workspaces[*index].workspace_id,
+                        )
+                    })
+                })
+            })
+        })
+        .flatten();
     let height = usize::from(workspace_area.height);
-    let max_scroll = total_rows.saturating_sub(height);
+    let max_scroll = spaces.len().saturating_sub(height);
     *state.workspace_scroll = (*state.workspace_scroll).min(max_scroll);
     if let Some(row) = selected_row {
         if row < *state.workspace_scroll {
@@ -57,64 +62,20 @@ pub(super) fn render_collapsed(
         }
     }
     hits.workspace_max_scroll = max_scroll;
-    let mut skip = *state.workspace_scroll;
     let mut y = workspace_area.y;
-    for (index, endpoint) in state.endpoints.iter().enumerate() {
+    for (endpoint_index, index) in spaces.into_iter().skip(*state.workspace_scroll) {
         if y >= workspace_area.bottom() {
             break;
         }
-        let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
-        let active = &endpoint.endpoint_id == state.active_endpoint_id;
-        let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
-        if skip > 0 {
-            skip -= 1;
-        } else {
-            if active && collapsed {
-                buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-            }
-            let label = if endpoint.endpoint_id.is_local() {
-                "L".to_owned()
-            } else {
-                (index + 1).to_string()
-            };
-            let marker = if collapsed { "▸" } else { "▾" };
-            put_text(
-                buffer,
-                rect.x,
-                rect.y,
-                rect.width.saturating_sub(1),
-                &format!("{marker}{label}"),
-                Style::default().fg(if endpoint.status == ClientEndpointStatus::Online {
-                    palette.text
-                } else {
-                    palette.overlay0
-                }),
-            );
-            if !endpoint.endpoint_id.is_local() {
-                let (glyph, _, color) = endpoint_status_presentation(endpoint.status, palette);
-                put_right_text(buffer, rect, rect.y, glyph, Style::default().fg(color));
-            }
-            hits.machines.push(MachineHit {
-                rect,
-                collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
-                endpoint_id: endpoint.endpoint_id.clone(),
-            });
-            y = y.saturating_add(1);
-        }
-        if collapsed {
-            continue;
-        }
+        let endpoint = &state.endpoints[endpoint_index];
         let Some(snapshot) = endpoint.snapshot.as_deref() else {
             continue;
         };
-        for workspace in &snapshot.workspaces {
-            if skip > 0 {
-                skip -= 1;
-                continue;
-            }
-            if y >= workspace_area.bottom() {
-                break;
-            }
+        let Some(workspace) = snapshot.workspaces.get(index) else {
+            continue;
+        };
+        let active = &endpoint.endpoint_id == state.active_endpoint_id;
+        {
             let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
             let focused = active && workspace.focused;
             let selected = state.selected_workspace_id.is_some_and(|target| {
@@ -238,7 +199,7 @@ pub(super) fn render_expanded(
         workspace_area.x,
         workspace_area.y,
         workspace_area.width,
-        " machines",
+        " spaces",
         Style::default()
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
@@ -247,41 +208,58 @@ pub(super) fn render_expanded(
     let empty_collapsed_groups = HashSet::new();
 
     enum Row {
-        Endpoint(usize),
         Workspace {
             endpoint: usize,
             entry: WorkspaceEntry,
         },
         Heading {
-            endpoint: usize,
-            heading: super::sidebar::SpaceHeading,
+            key: String,
+            label: String,
         },
     }
-    let mut rows = Vec::new();
-    for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
-        rows.push(Row::Endpoint(endpoint_index));
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
-            continue;
-        }
-        if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                .unwrap_or(&empty_collapsed_groups);
-            rows.extend(
-                super::sidebar::sidebar_rows(snapshot, collapsed_groups)
-                    .into_iter()
-                    .map(|row| match row {
-                        super::sidebar::SidebarRow::Workspace(entry) => Row::Workspace {
-                            endpoint: endpoint_index,
-                            entry,
-                        },
-                        super::sidebar::SidebarRow::Heading(heading) => Row::Heading {
-                            endpoint: endpoint_index,
-                            heading,
-                        },
-                    }),
-            );
-        }
-    }
+    // THE TIER TREE IS THE GROUPING, WHATEVER THE NUMBER OF MACHINES
+    // (operator 2026-10-05: where an agent runs "shouldn't be the primary
+    // identifier"). Every machine's spaces merge under shared tier headings;
+    // no machine row is drawn. A merged heading collapses through the local
+    // collapse set, under the same `space:` key one machine uses.
+    let focused = state
+        .endpoints
+        .iter()
+        .enumerate()
+        .find_map(|(endpoint, machine)| {
+            (&machine.endpoint_id == state.active_endpoint_id)
+                .then(|| {
+                    machine
+                        .snapshot
+                        .as_deref()?
+                        .workspaces
+                        .iter()
+                        .position(|workspace| workspace.focused)
+                        .map(|index| (endpoint, index))
+                })
+                .flatten()
+        });
+    let rows =
+        super::federated_tree::federated_rows(state.endpoints, state.collapsed_groups, focused)
+            .into_iter()
+            .map(|row| match row {
+                super::federated_tree::FederatedRow::Workspace {
+                    endpoint,
+                    index,
+                    indented,
+                } => Row::Workspace {
+                    endpoint,
+                    entry: WorkspaceEntry {
+                        index,
+                        indented,
+                        last_child: false,
+                    },
+                },
+                super::federated_tree::FederatedRow::Heading { key, label } => {
+                    Row::Heading { key, label }
+                }
+            })
+            .collect::<Vec<_>>();
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -294,7 +272,7 @@ pub(super) fn render_expanded(
     let row_heights = rows
         .iter()
         .map(|row| match row {
-            Row::Endpoint(_) | Row::Heading { .. } => 1,
+            Row::Heading { .. } => 1,
             Row::Workspace { endpoint, entry } => {
                 let endpoint = &state.endpoints[*endpoint];
                 let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
@@ -324,32 +302,17 @@ pub(super) fn render_expanded(
             }
         })
         .collect::<Vec<_>>();
+    // One tree, so the gap rules are the single-machine ones: a gap before
+    // every top-level row and every heading, none before an indented child.
     let gaps = rows
         .iter()
         .enumerate()
-        .map(|(index, row)| match (row, rows.get(index + 1)) {
-            (
-                Row::Workspace { endpoint, .. },
-                Some(Row::Workspace {
-                    endpoint: next_endpoint,
-                    entry,
-                }),
-            ) if endpoint == next_endpoint => u16::from(!entry.indented) * config.spaces.row_gap,
-            (
-                Row::Workspace { endpoint, .. } | Row::Heading { endpoint, .. },
-                Some(Row::Heading {
-                    endpoint: next_endpoint,
-                    ..
-                }),
-            ) if endpoint == next_endpoint => config.spaces.row_gap,
-            (
-                Row::Heading { endpoint, .. },
-                Some(Row::Workspace {
-                    endpoint: next_endpoint,
-                    entry,
-                }),
-            ) if endpoint == next_endpoint => u16::from(!entry.indented) * config.spaces.row_gap,
-            _ => 0,
+        .map(|(index, _)| match rows.get(index + 1) {
+            Some(Row::Workspace { entry, .. }) => {
+                u16::from(!entry.indented) * config.spaces.row_gap
+            }
+            Some(Row::Heading { .. }) => config.spaces.row_gap,
+            None => 0,
         })
         .collect::<Vec<_>>();
     let reveal_navigation = !body.is_empty() && std::mem::take(state.reveal_navigation_workspace);
@@ -376,7 +339,7 @@ pub(super) fn render_expanded(
                         }
                     })
             }
-            Row::Endpoint(_) | Row::Heading { .. } => false,
+            Row::Heading { .. } => false,
         });
         if let Some(selected_row) = selected_row {
             *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
@@ -404,64 +367,23 @@ pub(super) fn render_expanded(
     let mut y = body.y;
     for (row_index, row) in rows.iter().enumerate().skip(*state.workspace_scroll) {
         match row {
-            Row::Endpoint(index) => {
+            Row::Heading { key, label } => {
                 if y >= body.bottom() {
                     break;
                 }
-                let endpoint = &state.endpoints[*index];
                 let rect = Rect::new(body.x, y, content_width, 1);
-                let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
-                let marker = if collapsed { "▸" } else { "▾" };
-                render_endpoint_row(
+                render_tier_heading(
                     buffer,
                     rect,
-                    marker,
-                    endpoint,
-                    collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
-                    palette,
-                );
-                hits.machines.push(MachineHit {
-                    rect,
-                    collapse_toggle: Rect::new(
-                        rect.x.saturating_add(1),
-                        rect.y,
-                        u16::from(rect.width > 1),
-                        1,
-                    ),
-                    endpoint_id: endpoint.endpoint_id.clone(),
-                });
-                y = y
-                    .saturating_add(1)
-                    .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
-            }
-            Row::Heading { endpoint, heading } => {
-                if y >= body.bottom() {
-                    break;
-                }
-                let endpoint = &state.endpoints[*endpoint];
-                let Some(snapshot) = endpoint.snapshot.as_deref() else {
-                    continue;
-                };
-                let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups);
-                let rect = Rect::new(body.x, y, content_width, 1);
-                let nested = Rect::new(
-                    rect.x.saturating_add(2),
-                    rect.y,
-                    rect.width.saturating_sub(2),
-                    rect.height,
-                );
-                super::sidebar::render_space_heading(
-                    buffer,
-                    nested,
-                    snapshot,
-                    heading,
-                    collapsed_groups,
+                    state.endpoints,
+                    key,
+                    label,
+                    state.collapsed_groups,
                     config.status_indicators,
                     palette,
                 );
                 hits.space_headings
-                    .push((rect, endpoint.endpoint_id.clone(), heading.key.clone()));
+                    .push((rect, ClientEndpointId::Local, key.clone()));
                 y = y
                     .saturating_add(1)
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
@@ -492,12 +414,7 @@ pub(super) fn render_expanded(
                     break;
                 }
                 let rect = Rect::new(body.x, y, content_width, height);
-                let nested = Rect::new(
-                    rect.x.saturating_add(2),
-                    rect.y,
-                    rect.width.saturating_sub(2),
-                    rect.height,
-                );
+                let nested = rect;
                 let endpoint_active = &endpoint.endpoint_id == state.active_endpoint_id;
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
@@ -526,14 +443,9 @@ pub(super) fn render_expanded(
                             .add_modifier(Modifier::DIM),
                     );
                 }
-                let group_toggle = super::sidebar::render_parent_group_toggle(
-                    buffer,
-                    rect,
-                    snapshot,
-                    entry.index,
-                    collapsed_groups,
-                    palette,
-                );
+                // In the merged tree only a tier heading collapses: a space
+                // never heads a group here, so it carries no toggle of its own.
+                let group_toggle = None;
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
@@ -624,46 +536,65 @@ fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {
         .map_or("Local", |endpoint| endpoint.label.as_str())
 }
 
-fn render_endpoint_row(
+/// A tier heading shared across machines: the most urgent status among every
+/// machine's spaces in the tier, the tier name, and the collapse toggle.
+#[allow(clippy::too_many_arguments)] // mirrors render_space_heading's inputs plus the machine list
+fn render_tier_heading(
     buffer: &mut Buffer,
     rect: Rect,
-    marker: &str,
-    endpoint: &ClientShellEndpoint,
-    highlighted: bool,
+    endpoints: &[ClientShellEndpoint],
+    key: &str,
+    label: &str,
+    collapsed_groups: &HashSet<String>,
+    indicators: crate::config::StatusIndicatorStyle,
     palette: &Palette,
 ) {
-    if highlighted {
-        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+    if rect.is_empty() {
+        return;
     }
-    let (glyph, state, color) = endpoint_status_presentation(endpoint.status, palette);
-    let state = if endpoint.status == ClientEndpointStatus::Online {
-        ""
-    } else {
-        state
-    };
-    let signal = if endpoint.endpoint_id.is_local() {
-        String::new()
-    } else if state.is_empty() {
-        glyph.to_owned()
-    } else {
-        format!("{glyph} {state}")
-    };
-    let signal_width = display_width(&signal).min(rect.width);
+    let status = endpoints
+        .iter()
+        .filter_map(|endpoint| endpoint.snapshot.as_deref())
+        .flat_map(|snapshot| snapshot.workspaces.iter())
+        .filter(|workspace| {
+            workspace
+                .label
+                .split_once('/')
+                .map_or(workspace.label.as_str(), |(tier, _)| tier)
+                == label
+        })
+        .map(|workspace| workspace.agent_status)
+        .max_by_key(|status| status_priority(*status))
+        .unwrap_or(crate::api::schema::AgentStatus::Unknown);
+    let heading = format!("{} {label}", status_icon(status, indicators));
     put_text(
         buffer,
-        rect.x,
+        rect.x.saturating_add(1),
         rect.y,
-        rect.width.saturating_sub(signal_width.saturating_add(1)),
-        &format!(" {marker} {}", endpoint.label),
+        rect.width.saturating_sub(2),
+        &heading,
         Style::default()
-            .fg(
-                if matches!(endpoint.status, ClientEndpointStatus::Disabled) {
-                    palette.overlay0
-                } else {
-                    palette.text
-                },
-            )
+            .fg(palette.subtext0)
             .add_modifier(Modifier::BOLD),
     );
-    put_right_text(buffer, rect, rect.y, &signal, Style::default().fg(color));
+    put_text(
+        buffer,
+        rect.x.saturating_add(1),
+        rect.y,
+        1,
+        status_icon(status, indicators),
+        Style::default().fg(status_color(status, palette)),
+    );
+    put_text(
+        buffer,
+        rect.right().saturating_sub(1),
+        rect.y,
+        1,
+        if collapsed_groups.contains(key) {
+            "▸"
+        } else {
+            "▾"
+        },
+        Style::default().fg(palette.accent),
+    );
 }

@@ -2392,3 +2392,144 @@ fn navigator_foreign_tab_selection_keeps_the_tab_target() {
         }] if activated == &endpoint_id && tab_id == "tab_1"
     ));
 }
+
+/// B-03 proof, as a frame: with a second machine connected the sidebar still
+/// leads with the tier tree, a remote worker sits under the Air's work tier
+/// with an m4 badge, and no machine is a top-level row.
+#[test]
+fn a_second_machine_joins_the_tier_tree_and_shows_only_as_a_badge() {
+    use crate::api::schema::AgentStatus;
+
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Tree;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut m4 = remote_profile();
+    m4.id = ProfileId::parse("8c855fe37b0e5b399606ef9ac72a2627").unwrap();
+    m4.label = "m4".into();
+    let m4_id = ClientEndpointId::Ssh(m4.id.clone());
+    state.set_endpoint_catalog(&[m4]);
+    state.set_endpoint_status(&m4_id, ClientEndpointStatus::Online);
+
+    let tier_spaces = |labels: &[&str]| {
+        let mut snapshot = snapshot();
+        let template = snapshot.workspaces[0].clone();
+        snapshot.workspaces = labels
+            .iter()
+            .enumerate()
+            .map(|(number, label)| ClientShellWorkspace {
+                workspace_id: format!("ws_{number}"),
+                number: number + 1,
+                label: (*label).into(),
+                custom_label: true,
+                focused: number == 0,
+                ..template.clone()
+            })
+            .collect();
+        snapshot
+    };
+    let mut air = tier_spaces(&["assistant", "infra", "meta", "work/o-dev"]);
+    let mut lead = agent("o-dev", AgentStatus::Working, 1);
+    lead.workspace_id = "ws_3".into();
+    lead.focused = false;
+    air.agents = vec![lead];
+    state.set_snapshot(Box::new(air));
+    state.set_pane_surface(surface());
+
+    let mut remote = tier_spaces(&["work/o-dev"]);
+    remote.boot_id = "m4-boot".into();
+    let mut worker = agent("w-scratch", AgentStatus::Idle, 1);
+    worker.workspace_id = "ws_0".into();
+    worker.parent_agent = Some("o-dev".into());
+    worker.focused = false;
+    remote.agents = vec![worker];
+    state.set_endpoint_snapshot(&m4_id, Box::new(remote));
+
+    let frame = state.compose(110, 40).expect("federated frame");
+    let lines = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let sidebar = lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .take(state.sidebar_width as usize)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let joined = sidebar.join("\n");
+
+    // 1. No machine is a top-level group.
+    assert!(state.hits.machines.is_empty(), "no machine rows:\n{joined}");
+    assert!(
+        !joined.contains(" machines"),
+        "header is spaces, not machines:\n{joined}"
+    );
+
+    // 2. Tier order is the Air's, with one work heading over both machines.
+    let at = |needle: &str| {
+        sidebar
+            .iter()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} missing:\n{joined}"))
+    };
+    assert!(at("assistant") < at("infra"));
+    assert!(at("infra") < at("meta"));
+    assert!(at("meta") < at(" work"));
+    let work_spaces = state
+        .hits
+        .workspaces
+        .iter()
+        .filter(|hit| hit.indented && (hit.endpoint_id == m4_id || hit.endpoint_id.is_local()))
+        .count();
+    assert_eq!(
+        work_spaces, 2,
+        "both machines' work/o-dev under one heading"
+    );
+
+    // 3. The remote worker is in the agent tree under its Air orchestrator,
+    //    with the m4 badge; the Air row carries no badge.
+    let lead_row = at("o-dev");
+    let worker_row = at("w-scratch");
+    assert!(
+        worker_row > lead_row,
+        "worker under its orchestrator:\n{joined}"
+    );
+    assert!(
+        sidebar[worker_row].contains("m4"),
+        "m4 badge on remote row:\n{joined}"
+    );
+    assert!(
+        !sidebar[lead_row].contains("Local"),
+        "no badge for the local machine:\n{joined}"
+    );
+
+    // 4. Clicking the remote agent row targets the remote pane.
+    let (rect, endpoint, pane) = state
+        .hits
+        .endpoint_agents
+        .iter()
+        .find(|(_, endpoint, _)| endpoint == &m4_id)
+        .cloned()
+        .expect("remote agent hit");
+    assert_eq!(pane, "pane_1");
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x + 2,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let _ = endpoint;
+    assert!(
+        outcome.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::ActivateEndpoint { endpoint_id, .. } if endpoint_id == &m4_id
+        )) || !outcome.requests.is_empty(),
+        "a remote row click drives the remote machine"
+    );
+}
