@@ -100,6 +100,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: 9,
+        arrived: std::time::Instant::now(),
         pane_id: moved.pane.pane_id,
         events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
             "x".into(),

@@ -526,6 +526,7 @@ impl HeadlessServer {
                         client.clear_deferred_render();
                     }
                     client.render_state.commit_sent_frame(prepared);
+                    self.latency.frame_sent(client_id, Instant::now(), |_| {});
                     sent += 1;
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {

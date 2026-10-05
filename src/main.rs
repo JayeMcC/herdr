@@ -29,6 +29,7 @@ mod input;
 mod integration;
 mod ipc;
 mod kitty_graphics;
+mod latency;
 mod layout;
 mod logging;
 mod metadata_tokens;
@@ -52,8 +53,6 @@ mod selection;
 mod server;
 mod session;
 mod session_import;
-#[cfg(test)]
-mod test_env;
 mod sound;
 mod stack_placement;
 mod terminal;
@@ -61,6 +60,8 @@ mod terminal_effects;
 mod terminal_modes;
 mod terminal_notify;
 mod terminal_theme;
+#[cfg(test)]
+mod test_env;
 mod ui;
 mod update;
 mod workspace;

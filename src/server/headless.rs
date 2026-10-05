@@ -236,6 +236,8 @@ pub struct HeadlessServer {
     deferred_alt_screen_reads: Vec<api::ApiRequestMessage>,
     /// Monotonic activity counter used to pick the most recently active client.
     next_activity_stamp: u64,
+    /// Always-on input latency meter, owned by the server loop.
+    latency: Box<crate::latency::LatencyMeter>,
     /// Configured virtual terminal size used when no clients are connected.
     headless_size: (u16, u16),
     /// Shared pane runtime size derived from the foreground client, or the
@@ -370,6 +372,7 @@ impl HeadlessServer {
             pending_alt_screen_reads: Vec::new(),
             deferred_alt_screen_reads: Vec::new(),
             next_activity_stamp: 1,
+            latency: crate::latency::LatencyMeter::new(),
             headless_size,
             effective_size: headless_size,
             shutting_down: false,
@@ -552,6 +555,8 @@ impl HeadlessServer {
             {
                 crate::render_prof::event("render.attempt");
                 let render_request = self.app.render_dirty.take();
+                self.latency
+                    .set_frame_sources(render_request.pty_sources.iter().map(|pane| pane.raw()));
                 let pty_dirty = !render_request.pty_sources.is_empty();
                 if pty_dirty {
                     crate::render_prof::event("render.attempt.pty_dirty");
@@ -595,6 +600,7 @@ impl HeadlessServer {
                     crate::render_prof::event("full_render.invoke");
                     self.render_and_stream();
                 }
+                self.latency.clear_frame_sources();
                 self.app.record_render_attempt(now, !hidden_only);
                 needs_render = false;
                 needs_full_render = false;
@@ -2122,7 +2128,12 @@ impl HeadlessServer {
             } => self.handle_terminal_attach_mouse(
                 client_id, kind, position, geometry, modifiers, lines,
             ),
-            ServerEvent::ClientInput { client_id, data } => {
+            ServerEvent::ClientInput {
+                client_id,
+                data,
+                arrived,
+            } => {
+                let dequeued = Instant::now();
                 if self.handoff_in_progress {
                     debug!(
                         client_id,
@@ -2138,9 +2149,22 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
+                let kind = crate::latency::classify_raw_input(&data);
                 if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
-                    if let Err(err) = apply_terminal_attach_input(runtime, data) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err);
+                    match apply_terminal_attach_input(runtime, data) {
+                        Ok(()) => {
+                            if let Some(kind) = kind {
+                                self.latency.input_applied(
+                                    client_id,
+                                    crate::latency::UNKNOWN_PANE,
+                                    kind,
+                                    arrived,
+                                    dequeued,
+                                    Instant::now(),
+                                );
+                            }
+                        }
+                        Err(err) => warn!(client_id, terminal_id = %terminal_id, err = %err),
                     }
                 }
                 true
@@ -2402,7 +2426,9 @@ impl HeadlessServer {
                 client_id,
                 pane_id,
                 events,
+                arrived,
             } => {
+                let dequeued = Instant::now();
                 if self.handoff_in_progress
                     || !self
                         .clients
@@ -2480,8 +2506,22 @@ impl HeadlessServer {
                     return foreground_changed | geometry_changed;
                 };
                 let scroll_before = runtime.scroll_metrics();
-                if let Err(err) = apply_client_pane_input_events(runtime, &events) {
-                    warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
+                match apply_client_pane_input_events(runtime, &events) {
+                    Ok(()) => {
+                        if let Some(kind) = crate::latency::classify_pane_events(&events) {
+                            self.latency.input_applied(
+                                client_id,
+                                runtime_pane_id.raw(),
+                                kind,
+                                arrived,
+                                dequeued,
+                                Instant::now(),
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
+                    }
                 }
                 foreground_changed | geometry_changed || runtime.scroll_metrics() != scroll_before
             }

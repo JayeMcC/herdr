@@ -735,6 +735,7 @@ impl HeadlessServer {
                         client.shell_graphics_delivery = delivery;
                     }
                     client.render_state.commit_sent_frame(prepared);
+                    self.latency.frame_sent(client_id, Instant::now(), |_| {});
                     if shell_graphics_pending || shell_assets_deferred {
                         client.defer_full_render();
                     } else {

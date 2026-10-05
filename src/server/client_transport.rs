@@ -403,7 +403,12 @@ pub(crate) enum ServerEvent {
         writer: ClientWriter,
     },
     /// A client sent an input message.
-    ClientInput { client_id: u64, data: Vec<u8> },
+    ClientInput {
+        client_id: u64,
+        data: Vec<u8>,
+        /// When the transport thread decoded it; the latency meter's start.
+        arrived: std::time::Instant,
+    },
     /// A client reported the one armed Kitty regular-file response.
     GraphicsTransmissionResult {
         client_id: u64,
@@ -485,6 +490,8 @@ pub(crate) enum ServerEvent {
         client_id: u64,
         pane_id: String,
         events: Vec<ClientPaneInputEvent>,
+        /// When the transport thread decoded it; the latency meter's start.
+        arrived: std::time::Instant,
     },
     /// A client-owned shell delivered semantic input to its active popup terminal.
     ClientShellPopupInput {
@@ -1044,7 +1051,11 @@ fn client_read_loop_with_endpoint_controls(
                         break;
                     }
                 } else {
-                    ServerEvent::ClientInput { client_id, data }
+                    ServerEvent::ClientInput {
+                        client_id,
+                        data,
+                        arrived: std::time::Instant::now(),
+                    }
                 }
             }
             ClientMessage::ObserveTerminal { target } => {
@@ -1177,6 +1188,7 @@ fn client_read_loop_with_endpoint_controls(
                         client_id,
                         pane_id,
                         events,
+                        arrived: std::time::Instant::now(),
                     },
                     InputEventLimit::TooManyEvents => {
                         warn!(
@@ -2142,7 +2154,9 @@ mod tests {
         .expect("write maximum-size bracketed paste");
 
         match recv_server_event(&mut server_event_rx, "maximum-size paste event") {
-            ServerEvent::ClientInput { client_id, data } => {
+            ServerEvent::ClientInput {
+                client_id, data, ..
+            } => {
                 assert_eq!(client_id, 7);
                 assert_eq!(data.len(), MAX_INPUT_PAYLOAD);
             }
@@ -2182,7 +2196,9 @@ mod tests {
         .expect("write valid input after rejection");
 
         match recv_server_event(&mut server_event_rx, "valid input after rejection") {
-            ServerEvent::ClientInput { client_id, data } => {
+            ServerEvent::ClientInput {
+                client_id, data, ..
+            } => {
                 assert_eq!(client_id, 7);
                 assert_eq!(data, b"still connected");
             }

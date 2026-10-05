@@ -89,6 +89,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         pending_alt_screen_reads: Vec::new(),
         deferred_alt_screen_reads: Vec::new(),
         next_activity_stamp: 1,
+        latency: crate::latency::LatencyMeter::new(),
         headless_size,
         effective_size: headless_size,
         shutting_down: false,
@@ -2243,6 +2244,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: 22,
+        arrived: std::time::Instant::now(),
         pane_id: second_pane_id,
         events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
             "typed".into(),
@@ -2583,6 +2585,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
     assert!(
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id,
             events: vec![
                 crate::protocol::ClientPaneInputEvent::Key {
@@ -2727,6 +2730,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id: pane_id.clone(),
             events: vec![key(crate::protocol::ClientKeyKind::Press)],
         })
@@ -2735,6 +2739,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id,
             events: vec![key(crate::protocol::ClientKeyKind::Release)],
         })
@@ -2804,6 +2809,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 12,
+            arrived: std::time::Instant::now(),
             pane_id: server.app.session_snapshot().focused_pane_id.unwrap(),
             events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
                 "must-not-leak".into(),
@@ -2966,6 +2972,7 @@ async fn terminal_popup_is_visible_and_modal_only_on_its_owning_tab() {
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: 32,
+        arrived: std::time::Instant::now(),
         pane_id: second_pane_id,
         events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
             "typed".into(),
@@ -3067,6 +3074,7 @@ async fn client_shell_release_under_popup_renders_when_it_resets_scrollback() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id: public_pane_id,
             events: vec![crate::protocol::ClientPaneInputEvent::Key {
                 code: crate::protocol::ClientKeyCode::Char('x'),
@@ -3124,6 +3132,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id: public_pane_id.clone(),
             events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
                 "x".to_owned(),
@@ -3148,6 +3157,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id: public_pane_id,
             events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
                 "y".to_owned(),
@@ -3183,6 +3193,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id,
             events: vec![crate::protocol::ClientPaneInputEvent::Mouse {
                 kind: crate::protocol::ClientMouseKind::Moved,
@@ -3221,6 +3232,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
     let render_impact =
         server.handle_server_event_with_render_impact(ServerEvent::ClientShellPaneInput {
             client_id: 11,
+            arrived: std::time::Instant::now(),
             pane_id,
             events: vec![crate::protocol::ClientPaneInputEvent::Mouse {
                 kind: crate::protocol::ClientMouseKind::Moved,
@@ -5431,6 +5443,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 1,
+            arrived: std::time::Instant::now(),
             pane_id: pane_id.clone(),
             events: vec![key(crate::protocol::ClientKeyKind::Press)],
         })
@@ -5441,6 +5454,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 1,
+            arrived: std::time::Instant::now(),
             pane_id: pane_id.clone(),
             events: vec![key(crate::protocol::ClientKeyKind::Release)],
         })
@@ -5451,6 +5465,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id: 1,
+            arrived: std::time::Instant::now(),
             pane_id,
             events: vec![key(crate::protocol::ClientKeyKind::Press)],
         })
