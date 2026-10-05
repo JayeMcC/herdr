@@ -782,6 +782,8 @@ fn spawn_basic_detection_task(
             }
 
             let now = std::time::Instant::now();
+            let _detect_phase =
+                crate::latency::enter_phase(crate::latency::Phase::Detect, pane_id.raw());
             let suppressed_agent = active_pending_release(&pending_release_for_task, now);
             if suppressed_agent.is_none() && release_was_active {
                 has_process_probe = false;

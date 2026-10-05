@@ -17,6 +17,11 @@
 
 use std::time::{Duration, Instant};
 
+pub(crate) mod phase;
+pub(crate) mod watchdog;
+
+pub(crate) use phase::{enter as enter_phase, Phase};
+
 use crate::protocol::{ClientKeyCode, ClientKeyKind, ClientMouseKind, ClientPaneInputEvent};
 
 /// Keys arriving closer together than this on the same pane are a dictation

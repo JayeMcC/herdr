@@ -405,6 +405,7 @@ impl HeadlessServer {
         let mut needs_render = true;
         let mut needs_full_render = true;
         let mut needs_graphics_render = false;
+        crate::latency::watchdog::start_for_loop_thread();
 
         loop {
             crate::render_prof::event("loop.tick");
@@ -433,7 +434,13 @@ impl HeadlessServer {
             }
             // 2. Drain a bounded internal-event batch. API handlers perform an
             // exhaustive forwarding-aware drain before reading pane/runtime state.
-            if self.drain_internal_events_with_forwarding() {
+            let events_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Events,
+                crate::latency::UNKNOWN_PANE,
+            );
+            let drained_internal = self.drain_internal_events_with_forwarding();
+            drop(events_phase);
+            if drained_internal {
                 needs_render = true;
                 needs_full_render = true;
                 needs_graphics_render = false;
@@ -449,6 +456,10 @@ impl HeadlessServer {
             }
 
             // 3. Drain API requests.
+            let api_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Api,
+                crate::latency::UNKNOWN_PANE,
+            );
             if self.pane_graphics_runtime_active() {
                 let api_impact = self.drain_api_requests_with_render_impact();
                 record_render_impact("api_requests", api_impact);
@@ -469,6 +480,7 @@ impl HeadlessServer {
                 needs_full_render = true;
                 crate::render_prof::event("full_render_cause.api_requests");
             }
+            drop(api_phase);
             if self.should_quit.load(Ordering::Acquire) {
                 continue;
             }
@@ -480,6 +492,10 @@ impl HeadlessServer {
             self.accept_client_connections()?;
 
             // 5. Drain server events from client threads.
+            let client_phase = crate::latency::enter_phase(
+                crate::latency::Phase::ClientEvents,
+                crate::latency::UNKNOWN_PANE,
+            );
             if self.pane_graphics_runtime_active() {
                 let server_impact = self.drain_server_events_with_render_impact();
                 record_render_impact("server_events", server_impact);
@@ -500,13 +516,20 @@ impl HeadlessServer {
                 needs_full_render = true;
                 crate::render_prof::event("full_render_cause.server_events");
             }
+            drop(client_phase);
             if self.should_quit.load(Ordering::Acquire) {
                 continue;
             }
 
             // 6. Handle scheduled tasks.
             let now = Instant::now();
-            if self.handle_scheduled_tasks_headless(now, needs_render) {
+            let scheduled_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Scheduled,
+                crate::latency::UNKNOWN_PANE,
+            );
+            let scheduled = self.handle_scheduled_tasks_headless(now, needs_render);
+            drop(scheduled_phase);
+            if scheduled {
                 needs_render = true;
                 needs_full_render = true;
                 needs_graphics_render = false;
@@ -554,6 +577,10 @@ impl HeadlessServer {
                         )))
             {
                 crate::render_prof::event("render.attempt");
+                let _render_phase = crate::latency::enter_phase(
+                    crate::latency::Phase::Render,
+                    crate::latency::UNKNOWN_PANE,
+                );
                 let render_request = self.app.render_dirty.take();
                 self.latency
                     .set_frame_sources(render_request.pty_sources.iter().map(|pane| pane.raw()));
@@ -666,6 +693,16 @@ impl HeadlessServer {
                 continue;
             }
 
+            let _woken_phase = crate::latency::enter_phase(
+                match &event {
+                    LoopEvent::Api(_) => crate::latency::Phase::Api,
+                    LoopEvent::ServerEvent(_) => crate::latency::Phase::ClientEvents,
+                    LoopEvent::Internal(_) | LoopEvent::Timer | LoopEvent::RenderRequested => {
+                        crate::latency::Phase::Events
+                    }
+                },
+                crate::latency::UNKNOWN_PANE,
+            );
             match event {
                 LoopEvent::Timer => {}
                 LoopEvent::Internal(ev) => {

@@ -688,6 +688,10 @@ impl HeadlessServer {
                 crate::protocol::MAX_FRAME_SIZE
             };
             let mut shell_assets_deferred = false;
+            let _send_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Send,
+                crate::latency::UNKNOWN_PANE,
+            );
             let serialized = match Self::frame_server_message_with_max(prepared.message(), max) {
                 Ok(frame) => frame,
                 Err(protocol::FramingError::Oversized { claimed, max }) if has_graphics => {

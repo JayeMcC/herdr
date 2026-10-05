@@ -520,6 +520,7 @@ impl App {
         if !terminal.is_agent_terminal() {
             return None;
         }
+        let _phase = crate::latency::enter_phase(crate::latency::Phase::AgentInfo, pane_id.raw());
         let pane = self.pane_info(ws_idx, pane_id)?;
         Some(crate::api::schema::AgentInfo {
             terminal_id: pane.terminal_id,
