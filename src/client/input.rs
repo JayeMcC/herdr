@@ -108,7 +108,7 @@ fn unix_stdin_reader_loop(
                 .and_then(|mut matcher| direct_filter.flush_if_inactive(&mut matcher));
             if let Some(data) = released {
                 if event_tx
-                    .blocking_send(ClientLoopEvent::StdinInput(data))
+                    .blocking_send(ClientLoopEvent::StdinInput(data, std::time::Instant::now()))
                     .is_err()
                 {
                     return;
@@ -288,9 +288,11 @@ fn classify_unix_input(
     geometry: Option<crate::input::mouse::HostGeometry>,
 ) -> Option<ClientLoopEvent> {
     if sgr_pixels && crate::input::mouse::parse_report(&data).is_some() {
-        return geometry.map(|geometry| ClientLoopEvent::PixelMouse(data, geometry));
+        return geometry.map(|geometry| {
+            ClientLoopEvent::PixelMouse(data, geometry, std::time::Instant::now())
+        });
     }
-    Some(ClientLoopEvent::StdinInput(data))
+    Some(ClientLoopEvent::StdinInput(data, std::time::Instant::now()))
 }
 
 #[cfg(unix)]
@@ -303,7 +305,7 @@ fn flush_unix_palette_input(
     }
     let data = std::mem::take(pending_palette).concat();
     event_tx
-        .blocking_send(ClientLoopEvent::StdinInput(data))
+        .blocking_send(ClientLoopEvent::StdinInput(data, std::time::Instant::now()))
         .is_ok()
 }
 
@@ -631,9 +633,9 @@ mod tests {
     #[test]
     fn stdin_input_event_carries_raw_bytes() {
         let data = vec![0x1b, b'[', b'A']; // Up arrow escape sequence
-        let event = ClientLoopEvent::StdinInput(data.clone());
+        let event = ClientLoopEvent::StdinInput(data.clone(), std::time::Instant::now());
         match event {
-            ClientLoopEvent::StdinInput(d) => assert_eq!(d, data),
+            ClientLoopEvent::StdinInput(d, _) => assert_eq!(d, data),
             _ => panic!("expected StdinInput event"),
         }
     }
@@ -652,7 +654,7 @@ mod tests {
     fn pixel_mouse_classification_is_narrow_and_uses_read_geometry() {
         let geometry = crate::input::mouse::HostGeometry::new(80, 24, 800, 480).unwrap();
         let report = b"\x1b[<35;321;241M".to_vec();
-        let Some(ClientLoopEvent::PixelMouse(data, captured)) =
+        let Some(ClientLoopEvent::PixelMouse(data, captured, _)) =
             classify_unix_input(report.clone(), true, Some(geometry))
         else {
             panic!("expected dedicated pixel mouse event");
@@ -667,7 +669,7 @@ mod tests {
             b"\x1b_Gi=7;unrelated\x1b\\".as_slice(),
             b"\x1b[<35;2;3Mtail".as_slice(),
         ] {
-            let Some(ClientLoopEvent::StdinInput(data)) =
+            let Some(ClientLoopEvent::StdinInput(data, _)) =
                 classify_unix_input(raw.to_vec(), true, Some(geometry))
             else {
                 panic!("unrelated input must remain raw");
@@ -699,7 +701,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
 
         assert!(flush_unix_palette_input(&tx, &mut pending));
-        let ClientLoopEvent::StdinInput(data) = rx.try_recv().unwrap() else {
+        let ClientLoopEvent::StdinInput(data, _) = rx.try_recv().unwrap() else {
             panic!("expected palette input batch");
         };
         assert_eq!(

@@ -512,8 +512,10 @@ impl HeadlessServer {
                     }
                 };
             crate::render_prof::counter("retained_surface.bytes", serialized.len() as u64);
+            let (serialized, rtt_echo) = client.prefix_rtt_echo(serialized);
             match writer.render.try_send(serialized) {
                 Ok(()) => {
+                    client.commit_rtt_echo(rtt_echo);
                     let graphics_pending = graphics_delivery
                         .as_ref()
                         .is_some_and(crate::kitty_graphics::surface::DeliveryCache::has_pending);

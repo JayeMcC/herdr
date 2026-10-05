@@ -28,6 +28,7 @@ mod handshake;
 mod input;
 mod loop_config;
 mod notifications;
+mod rtt;
 mod shell;
 mod shell_runtime;
 mod startup;
@@ -418,6 +419,7 @@ async fn run_client_loop(
         draw_host_cursor,
         detached_process_children: Vec::new(),
         shell: config.shell_config.map(shell::ClientShellState::new),
+        rtt: rtt::ClientRtt::new(std::time::Instant::now()),
     };
     let mut federated = endpoint_catalog.has_enabled_ssh();
     if let Some(shell) = state.shell.as_mut() {
@@ -743,11 +745,12 @@ async fn run_client_loop(
         if let Some(shell) = state.shell.as_mut() {
             shell.tick_popup_pending(now);
         }
+        state.rtt.report_if_due(now);
 
         match event {
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
             #[cfg(unix)]
-            ClientLoopEvent::StdinInput(data) => {
+            ClientLoopEvent::StdinInput(data, read_at) => {
                 let image_bridge_active = endpoint_accepts_local_images(
                     is_remote_client,
                     write_stream.active_id(),
@@ -796,6 +799,7 @@ async fn run_client_loop(
                             continue;
                         }
                     }
+                    let rtt_kind = state.rtt.classify(&data, read_at);
                     let events = crate::raw_input::parse_raw_input_bytes_sync(&data);
                     if crate::raw_input::events_require_host_mode_refresh(&events) {
                         refresh_host_mouse_capture(
@@ -812,6 +816,7 @@ async fn run_client_loop(
                             .flatten();
                         (outcome, frame)
                     };
+                    let rtt_forwarded = rtt::forwards_to_endpoint(&outcome);
                     if finish_client_shell_input(
                         &mut state,
                         outcome,
@@ -823,6 +828,9 @@ async fn run_client_loop(
                         &mut scheduled_activation,
                     )? {
                         return Ok(());
+                    }
+                    if rtt_forwarded && pending_activation.is_none() {
+                        rtt::send_mark(&mut state.rtt, &mut write_stream, rtt_kind, read_at);
                     }
                     continue;
                 }
@@ -965,8 +973,9 @@ async fn run_client_loop(
                 }
             }
             #[cfg(unix)]
-            ClientLoopEvent::PixelMouse(data, geometry) => {
+            ClientLoopEvent::PixelMouse(data, geometry, read_at) => {
                 if state.shell.is_some() {
+                    let rtt_kind = state.rtt.classify(&data, read_at);
                     let (outcome, frame) = {
                         let shell = state.shell.as_mut().expect("checked shell mode");
                         let outcome = shell.handle_pixel_mouse(&data, geometry);
@@ -976,6 +985,7 @@ async fn run_client_loop(
                             .flatten();
                         (outcome, frame)
                     };
+                    let rtt_forwarded = rtt::forwards_to_endpoint(&outcome);
                     if finish_client_shell_input(
                         &mut state,
                         outcome,
@@ -987,6 +997,9 @@ async fn run_client_loop(
                         &mut scheduled_activation,
                     )? {
                         return Ok(());
+                    }
+                    if rtt_forwarded && pending_activation.is_none() {
+                        rtt::send_mark(&mut state.rtt, &mut write_stream, rtt_kind, read_at);
                     }
                     continue;
                 }
@@ -1861,6 +1874,15 @@ async fn run_client_loop(
                         if state.shell.is_some() {
                             state.pane_keyboard_report_all = enabled;
                             sync_client_shell_keyboard_report_all(&mut state)?;
+                        }
+                    }
+                    ServerMessage::EndpointControl { kind, data }
+                        if kind == crate::protocol::endpoint::CLIENT_RTT_ECHO_KIND =>
+                    {
+                        if endpoint_active {
+                            if let Ok(seq) = data.parse::<u64>() {
+                                state.rtt.echo(seq);
+                            }
                         }
                     }
                     ServerMessage::EndpointControl { kind, data } => {

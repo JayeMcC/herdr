@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "client_rtt.rs"]
+mod client_rtt_tests;
 #[path = "pane_graphics.rs"]
 mod pane_graphics_tests;
 #[path = "pane_move.rs"]

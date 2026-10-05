@@ -29,6 +29,12 @@ pub const HEALTH_PING_KIND: &str = "endpoint.health.ping.v1";
 pub const HEALTH_PONG_KIND: &str = "endpoint.health.pong.v1";
 pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
+/// Optional client-measured input round trip. The client sends a mark after the input it
+/// covers; the server echoes the highest applied mark ahead of its next frame. A peer that
+/// does not advertise this capability never receives either control.
+pub const CLIENT_RTT_CAPABILITY: &str = "client_rtt";
+pub const CLIENT_RTT_MARK_KIND: &str = "endpoint.client-rtt.mark.v1";
+pub const CLIENT_RTT_ECHO_KIND: &str = "endpoint.client-rtt.echo.v1";
 
 fn default_true() -> bool {
     true
@@ -151,6 +157,7 @@ impl EndpointServerWelcome {
                 PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
+                CLIENT_RTT_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -357,6 +364,7 @@ mod tests {
                 PRESENTATION_EFFECTS_FENCE_CAPABILITY.to_string(),
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
+                CLIENT_RTT_CAPABILITY.to_string(),
             ]
         );
     }
