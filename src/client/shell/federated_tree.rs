@@ -61,8 +61,11 @@ pub(super) fn tier_key(tier: &str) -> String {
 /// - Within a group, members keep that same order.
 /// - Every space appears exactly once, collapsed or not, unless its group is
 ///   collapsed, in which case only the focused member (if any) stays visible.
-pub(super) fn federated_rows<'a>(
-    endpoints: &'a [ClientShellEndpoint],
+/// `federated_rows_with` with no remote worktree collapses: the shape the
+/// tests assert. Production callers pass the remote sets.
+#[cfg(test)]
+pub(super) fn federated_rows(
+    endpoints: &[ClientShellEndpoint],
     collapsed: &HashSet<String>,
     focused: Option<(usize, usize)>,
 ) -> Vec<FederatedRow> {
