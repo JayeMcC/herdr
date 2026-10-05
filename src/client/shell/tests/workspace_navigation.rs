@@ -475,7 +475,6 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
         remote.boot_id = "remote-boot".into();
         state.set_endpoint_snapshot(&remote_id, Box::new(remote));
         state.sidebar_collapsed = compact;
-        state.collapsed_endpoints.insert(remote_id.clone());
         state.compose(cols, 18).unwrap();
         enter_navigation(&mut state);
         for number in 1..=15 {
@@ -485,7 +484,6 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
             state.compose(cols, 18).unwrap();
             workspace_rect(&state, &remote_id, &id);
         }
-        assert!(!state.collapsed_endpoints.contains(&remote_id));
         preview_key(&mut state, b"\x1b[B");
         if cols == 44 {
             assert_selected(&state, &remote_id, "ws_15");
