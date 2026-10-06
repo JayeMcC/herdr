@@ -560,6 +560,18 @@ fn sidebar_groups<'a>(snapshot: &'a ClientShellSnapshot) -> Vec<Option<SidebarGr
         .collect()
 }
 
+/// Whether this space sits in a worktree group (a repo checkout with its linked
+/// worktrees under it) rather than a space group.
+pub(in crate::client::shell) fn in_worktree_group(
+    snapshot: &ClientShellSnapshot,
+    index: usize,
+) -> bool {
+    sidebar_groups(snapshot)
+        .get(index)
+        .and_then(Option::as_ref)
+        .is_some_and(|group| !group.key.starts_with(SPACE_GROUP_PREFIX))
+}
+
 /// A heading row for a space group that has no space of its own to head it:
 /// every `<parent>/<child>` space exists but `<parent>` does not.
 #[derive(Debug, Clone, PartialEq, Eq)]

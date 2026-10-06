@@ -551,7 +551,8 @@ mod cli_signal_behavior_tests {
 
         begin_cli_output();
         let payload = b"herdr";
-        let written = unsafe { libc::write(write_fd, payload.as_ptr().cast(), payload.len()) };
+        let written =
+            unsafe { libc::write(write_fd, payload.as_ptr().cast(), payload.len()) };
         let errno = std::io::Error::last_os_error().raw_os_error();
         assert_eq!(unsafe { libc::close(write_fd) }, 0);
 

@@ -110,11 +110,17 @@ fn agent_rows(
                     .agents
                     .iter()
                     .filter_map(|agent| {
+                        // The host is an attribute of the row, and only when it
+                        // is NOT this machine (operator 2026-10-05: where an
+                        // agent runs "shouldn't be the primary identifier").
+                        // The local machine's rows carry no machine token, so
+                        // a one-machine panel and the local half of a
+                        // federated one read the same.
                         super::agent_sidebar::agent_row(
                             snapshot,
                             &agent.pane_id,
                             config,
-                            Some(&endpoint.label),
+                            (!endpoint.endpoint_id.is_local()).then_some(endpoint.label.as_str()),
                         )
                     })
                     .map(|agent| ((endpoint.endpoint_id.clone(), agent.pane_id.clone()), agent))
@@ -134,6 +140,10 @@ fn agent_rows(
         let key = (row.endpoint.endpoint_id.clone(), row.agent.pane_id.clone());
         let mut agent = rendered_rows.remove(&key)?;
         agent.focused &= row.endpoint.endpoint_id == active_endpoint_id;
+        if let Some((depth, heading)) = row.tree {
+            agent.depth = depth;
+            agent.heading = heading;
+        }
         Some(EndpointAgentRow {
             endpoint_id: row.endpoint.endpoint_id.clone(),
             machine_label: row.endpoint.label.to_owned(),

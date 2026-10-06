@@ -65,7 +65,66 @@ impl ClientShellState {
         let surface_available = self.snapshot.is_some() && self.pane_surface.is_some();
         let empty_collapsed_groups = HashSet::new();
         let mut targets = Vec::new();
-        for endpoint in &self.endpoints {
+        if self.endpoints.len() > 1 && !mobile {
+            // FEDERATED: walk the merged tier tree the sidebar draws, so the
+            // arrow keys never re-group by machine (operator 2026-10-05).
+            let focused = self
+                .endpoints
+                .iter()
+                .enumerate()
+                .find_map(|(endpoint, machine)| {
+                    (machine.endpoint_id == self.active_endpoint_id)
+                        .then(|| {
+                            machine
+                                .snapshot
+                                .as_deref()?
+                                .workspaces
+                                .iter()
+                                .position(|workspace| workspace.focused)
+                                .map(|index| (endpoint, index))
+                        })
+                        .flatten()
+                });
+            let collapsed = if self.sidebar_collapsed && surface_available {
+                &empty_collapsed_groups
+            } else {
+                &self.collapsed_groups
+            };
+            let empty_remote = HashMap::new();
+            let remote_collapsed = if self.sidebar_collapsed && surface_available {
+                &empty_remote
+            } else {
+                &self.remote_collapsed_groups
+            };
+            for row in super::federated_tree::federated_rows_with(
+                &self.endpoints,
+                collapsed,
+                remote_collapsed,
+                focused,
+            ) {
+                let super::federated_tree::FederatedRow::Workspace {
+                    endpoint, index, ..
+                } = row
+                else {
+                    continue;
+                };
+                let machine = &self.endpoints[endpoint];
+                if machine.status != ClientEndpointStatus::Online {
+                    continue;
+                }
+                let Some(snapshot) = machine.snapshot.as_deref() else {
+                    continue;
+                };
+                targets.push(WorkspaceNavigationTarget {
+                    endpoint_id: machine.endpoint_id.clone(),
+                    workspace_id: snapshot.workspaces[index].workspace_id.clone(),
+                    boot_id: snapshot.boot_id.clone(),
+                    generation: machine.snapshot_generation,
+                });
+            }
+        }
+        let per_machine = targets.is_empty();
+        for endpoint in self.endpoints.iter().filter(|_| per_machine) {
             if endpoint.status != ClientEndpointStatus::Online {
                 continue;
             }

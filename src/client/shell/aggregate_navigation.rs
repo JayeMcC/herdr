@@ -46,6 +46,9 @@ pub(super) struct AggregateAgentRow<'a> {
     pub(super) endpoint: CachedEndpointSnapshot<'a>,
     pub(super) agent: &'a ClientShellAgent,
     pub(super) recency: u64,
+    /// Tree mode across machines: this row's depth and the tier heading above
+    /// it. `None` in every other mode.
+    pub(super) tree: Option<(usize, Option<String>)>,
 }
 
 pub(super) struct AggregateAgentTarget {
@@ -95,6 +98,7 @@ pub(super) fn aggregate_agent_rows<'a>(
                             .unwrap_or_default(),
                         endpoint,
                         agent,
+                        tree: None,
                     })
             })
             .collect::<Vec<_>>();
@@ -130,6 +134,36 @@ pub(super) fn aggregate_agent_rows<'a>(
         return rows;
     }
 
+    // TREE MODE IS ONE TREE ACROSS MACHINES (operator 2026-10-05): tiers
+    // first, an M4 worker under its Air orchestrator, the machine only a badge.
+    // Per-machine trees laid end to end would re-group by machine.
+    if sort == crate::config::AgentPanelSortConfig::Tree
+        && endpoints.len() > 1
+        && cached_endpoint_snapshots(endpoints)
+            .all(|endpoint| endpoint.snapshot.agent_view_label.is_none())
+    {
+        let snapshots = cached_endpoint_snapshots(endpoints).collect::<Vec<_>>();
+        return super::federated_tree::federated_agent_tree(endpoints)
+            .into_iter()
+            .filter_map(|row| {
+                let endpoint = *snapshots
+                    .iter()
+                    .find(|cached| cached.endpoint_index == row.endpoint)?;
+                let agent = endpoint.snapshot.agents.get(row.agent)?;
+                Some(AggregateAgentRow {
+                    recency: endpoint
+                        .agent_recency
+                        .get(&agent.pane_id)
+                        .copied()
+                        .unwrap_or_default(),
+                    endpoint,
+                    agent,
+                    tree: Some((row.depth, row.heading)),
+                })
+            })
+            .collect();
+    }
+
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
             super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
@@ -148,6 +182,7 @@ pub(super) fn aggregate_agent_rows<'a>(
                             .unwrap_or_default(),
                         endpoint,
                         agent,
+                        tree: None,
                     })
                 })
         })
