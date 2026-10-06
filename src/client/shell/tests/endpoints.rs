@@ -2281,6 +2281,10 @@ fn navigator_foreign_tab_selection_keeps_the_tab_target() {
 /// with an m4 badge, and no machine is a top-level row.
 #[test]
 fn a_second_machine_joins_the_tier_tree_and_shows_only_as_a_badge() {
+    a_second_machine_tier_tree_case(false);
+}
+
+fn a_second_machine_tier_tree_case(projection_supported: bool) {
     use crate::api::schema::AgentStatus;
 
     let mut config = Config::default();
@@ -2326,6 +2330,12 @@ fn a_second_machine_joins_the_tier_tree_and_shows_only_as_a_badge() {
     worker.focused = false;
     remote.agents = vec![worker];
     state.set_endpoint_snapshot(&m4_id, Box::new(remote));
+    if projection_supported {
+        // A live server advertises agent-view projection; the default view
+        // (no label, no filter) must still render the tier tree.
+        state.set_endpoint_agent_view_projection_supported(&ClientEndpointId::Local, true);
+        state.set_endpoint_agent_view_projection_supported(&m4_id, true);
+    }
 
     let frame = state.compose(110, 40).expect("federated frame");
     let lines = frame
@@ -2427,4 +2437,14 @@ fn a_second_machine_joins_the_tier_tree_and_shows_only_as_a_badge() {
         )) || !outcome.requests.is_empty(),
         "a remote row click drives the remote machine"
     );
+}
+
+/// The same B-03 proof against a server that SUPPORTS agent-view projection,
+/// which every live server does. Measured 2026-10-06 on the installed build:
+/// with projection supported and the default view, the aggregate panel took
+/// the view-projection branch, which lists each machine's agents flat, so the
+/// tier headings and the worker nesting were missing in the real window.
+#[test]
+fn the_tier_tree_holds_when_the_server_supports_view_projection() {
+    a_second_machine_tier_tree_case(true);
 }

@@ -83,6 +83,44 @@ pub(super) fn aggregate_agent_rows<'a>(
         }
     });
 
+    // TREE MODE IS ONE TREE ACROSS MACHINES (operator 2026-10-05): tiers
+    // first, an M4 worker under its Air orchestrator, the machine only a badge.
+    // Per-machine trees laid end to end would re-group by machine.
+    //
+    // Checked BEFORE the view-projection branch: a live server supports view
+    // projection, and the default view (no filter, no custom sort) there used
+    // to list each machine's agents flat, dropping the tier headings and the
+    // nesting (measured 2026-10-06 on the installed build). A custom view
+    // keeps its own filter and order.
+    let default_view = !matches!(active_view, Some(Ok(Some(_))) | Some(Err(())));
+    if sort == crate::config::AgentPanelSortConfig::Tree
+        && endpoints.len() > 1
+        && default_view
+        && cached_endpoint_snapshots(endpoints)
+            .all(|endpoint| endpoint.snapshot.agent_view_label.is_none())
+    {
+        let snapshots = cached_endpoint_snapshots(endpoints).collect::<Vec<_>>();
+        return super::federated_tree::federated_agent_tree(endpoints)
+            .into_iter()
+            .filter_map(|row| {
+                let endpoint = *snapshots
+                    .iter()
+                    .find(|cached| cached.endpoint_index == row.endpoint)?;
+                let agent = endpoint.snapshot.agents.get(row.agent)?;
+                Some(AggregateAgentRow {
+                    recency: endpoint
+                        .agent_recency
+                        .get(&agent.pane_id)
+                        .copied()
+                        .unwrap_or_default(),
+                    endpoint,
+                    agent,
+                    tree: Some((row.depth, row.heading)),
+                })
+            })
+            .collect();
+    }
+
     if let Some(Ok(view)) = active_view {
         let mut rows = cached_endpoint_snapshots(endpoints)
             .flat_map(|endpoint| {
@@ -132,36 +170,6 @@ pub(super) fn aggregate_agent_rows<'a>(
         }
         sort_aggregate_rows(&mut rows, sort);
         return rows;
-    }
-
-    // TREE MODE IS ONE TREE ACROSS MACHINES (operator 2026-10-05): tiers
-    // first, an M4 worker under its Air orchestrator, the machine only a badge.
-    // Per-machine trees laid end to end would re-group by machine.
-    if sort == crate::config::AgentPanelSortConfig::Tree
-        && endpoints.len() > 1
-        && cached_endpoint_snapshots(endpoints)
-            .all(|endpoint| endpoint.snapshot.agent_view_label.is_none())
-    {
-        let snapshots = cached_endpoint_snapshots(endpoints).collect::<Vec<_>>();
-        return super::federated_tree::federated_agent_tree(endpoints)
-            .into_iter()
-            .filter_map(|row| {
-                let endpoint = *snapshots
-                    .iter()
-                    .find(|cached| cached.endpoint_index == row.endpoint)?;
-                let agent = endpoint.snapshot.agents.get(row.agent)?;
-                Some(AggregateAgentRow {
-                    recency: endpoint
-                        .agent_recency
-                        .get(&agent.pane_id)
-                        .copied()
-                        .unwrap_or_default(),
-                    endpoint,
-                    agent,
-                    tree: Some((row.depth, row.heading)),
-                })
-            })
-            .collect();
     }
 
     let mut rows = cached_endpoint_snapshots(endpoints)
