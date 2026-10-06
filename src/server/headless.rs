@@ -236,6 +236,8 @@ pub struct HeadlessServer {
     deferred_alt_screen_reads: Vec<api::ApiRequestMessage>,
     /// Monotonic activity counter used to pick the most recently active client.
     next_activity_stamp: u64,
+    /// Always-on input latency meter, owned by the server loop.
+    latency: Box<crate::latency::LatencyMeter>,
     /// Configured virtual terminal size used when no clients are connected.
     headless_size: (u16, u16),
     /// Shared pane runtime size derived from the foreground client, or the
@@ -370,6 +372,7 @@ impl HeadlessServer {
             pending_alt_screen_reads: Vec::new(),
             deferred_alt_screen_reads: Vec::new(),
             next_activity_stamp: 1,
+            latency: crate::latency::LatencyMeter::new(),
             headless_size,
             effective_size: headless_size,
             shutting_down: false,
@@ -402,6 +405,7 @@ impl HeadlessServer {
         let mut needs_render = true;
         let mut needs_full_render = true;
         let mut needs_graphics_render = false;
+        crate::latency::watchdog::start_for_loop_thread();
 
         loop {
             crate::render_prof::event("loop.tick");
@@ -430,7 +434,13 @@ impl HeadlessServer {
             }
             // 2. Drain a bounded internal-event batch. API handlers perform an
             // exhaustive forwarding-aware drain before reading pane/runtime state.
-            if self.drain_internal_events_with_forwarding() {
+            let events_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Events,
+                crate::latency::UNKNOWN_PANE,
+            );
+            let drained_internal = self.drain_internal_events_with_forwarding();
+            drop(events_phase);
+            if drained_internal {
                 needs_render = true;
                 needs_full_render = true;
                 needs_graphics_render = false;
@@ -446,6 +456,10 @@ impl HeadlessServer {
             }
 
             // 3. Drain API requests.
+            let api_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Api,
+                crate::latency::UNKNOWN_PANE,
+            );
             if self.pane_graphics_runtime_active() {
                 let api_impact = self.drain_api_requests_with_render_impact();
                 record_render_impact("api_requests", api_impact);
@@ -466,6 +480,7 @@ impl HeadlessServer {
                 needs_full_render = true;
                 crate::render_prof::event("full_render_cause.api_requests");
             }
+            drop(api_phase);
             if self.should_quit.load(Ordering::Acquire) {
                 continue;
             }
@@ -477,6 +492,10 @@ impl HeadlessServer {
             self.accept_client_connections()?;
 
             // 5. Drain server events from client threads.
+            let client_phase = crate::latency::enter_phase(
+                crate::latency::Phase::ClientEvents,
+                crate::latency::UNKNOWN_PANE,
+            );
             if self.pane_graphics_runtime_active() {
                 let server_impact = self.drain_server_events_with_render_impact();
                 record_render_impact("server_events", server_impact);
@@ -497,13 +516,20 @@ impl HeadlessServer {
                 needs_full_render = true;
                 crate::render_prof::event("full_render_cause.server_events");
             }
+            drop(client_phase);
             if self.should_quit.load(Ordering::Acquire) {
                 continue;
             }
 
             // 6. Handle scheduled tasks.
             let now = Instant::now();
-            if self.handle_scheduled_tasks_headless(now, needs_render) {
+            let scheduled_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Scheduled,
+                crate::latency::UNKNOWN_PANE,
+            );
+            let scheduled = self.handle_scheduled_tasks_headless(now, needs_render);
+            drop(scheduled_phase);
+            if scheduled {
                 needs_render = true;
                 needs_full_render = true;
                 needs_graphics_render = false;
@@ -551,7 +577,13 @@ impl HeadlessServer {
                         )))
             {
                 crate::render_prof::event("render.attempt");
+                let _render_phase = crate::latency::enter_phase(
+                    crate::latency::Phase::Render,
+                    crate::latency::UNKNOWN_PANE,
+                );
                 let render_request = self.app.render_dirty.take();
+                self.latency
+                    .set_frame_sources(render_request.pty_sources.iter().map(|pane| pane.raw()));
                 let pty_dirty = !render_request.pty_sources.is_empty();
                 if pty_dirty {
                     crate::render_prof::event("render.attempt.pty_dirty");
@@ -595,6 +627,7 @@ impl HeadlessServer {
                     crate::render_prof::event("full_render.invoke");
                     self.render_and_stream();
                 }
+                self.latency.clear_frame_sources();
                 self.app.record_render_attempt(now, !hidden_only);
                 needs_render = false;
                 needs_full_render = false;
@@ -660,6 +693,16 @@ impl HeadlessServer {
                 continue;
             }
 
+            let _woken_phase = crate::latency::enter_phase(
+                match &event {
+                    LoopEvent::Api(_) => crate::latency::Phase::Api,
+                    LoopEvent::ServerEvent(_) => crate::latency::Phase::ClientEvents,
+                    LoopEvent::Internal(_) | LoopEvent::Timer | LoopEvent::RenderRequested => {
+                        crate::latency::Phase::Events
+                    }
+                },
+                crate::latency::UNKNOWN_PANE,
+            );
             match event {
                 LoopEvent::Timer => {}
                 LoopEvent::Internal(ev) => {
@@ -2122,7 +2165,12 @@ impl HeadlessServer {
             } => self.handle_terminal_attach_mouse(
                 client_id, kind, position, geometry, modifiers, lines,
             ),
-            ServerEvent::ClientInput { client_id, data } => {
+            ServerEvent::ClientInput {
+                client_id,
+                data,
+                arrived,
+            } => {
+                let dequeued = Instant::now();
                 if self.handoff_in_progress {
                     debug!(
                         client_id,
@@ -2138,9 +2186,22 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
+                let kind = crate::latency::classify_raw_input(&data);
                 if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
-                    if let Err(err) = apply_terminal_attach_input(runtime, data) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err);
+                    match apply_terminal_attach_input(runtime, data) {
+                        Ok(()) => {
+                            if let Some(kind) = kind {
+                                self.latency.input_applied(
+                                    client_id,
+                                    crate::latency::UNKNOWN_PANE,
+                                    kind,
+                                    arrived,
+                                    dequeued,
+                                    Instant::now(),
+                                );
+                            }
+                        }
+                        Err(err) => warn!(client_id, terminal_id = %terminal_id, err = %err),
                     }
                 }
                 true
@@ -2402,7 +2463,9 @@ impl HeadlessServer {
                 client_id,
                 pane_id,
                 events,
+                arrived,
             } => {
+                let dequeued = Instant::now();
                 if self.handoff_in_progress
                     || !self
                         .clients
@@ -2480,8 +2543,22 @@ impl HeadlessServer {
                     return foreground_changed | geometry_changed;
                 };
                 let scroll_before = runtime.scroll_metrics();
-                if let Err(err) = apply_client_pane_input_events(runtime, &events) {
-                    warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
+                match apply_client_pane_input_events(runtime, &events) {
+                    Ok(()) => {
+                        if let Some(kind) = crate::latency::classify_pane_events(&events) {
+                            self.latency.input_applied(
+                                client_id,
+                                runtime_pane_id.raw(),
+                                kind,
+                                arrived,
+                                dequeued,
+                                Instant::now(),
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
+                    }
                 }
                 foreground_changed | geometry_changed || runtime.scroll_metrics() != scroll_before
             }
@@ -3007,6 +3084,17 @@ impl HeadlessServer {
         }
 
         match &msg.request.method {
+            api::schema::Method::ServerLatency(_) => {
+                let response = serde_json::to_string(&api::schema::SuccessResponse {
+                    id: msg.request.id.clone(),
+                    result: api::schema::ResponseResult::Latency {
+                        latency: Box::new(self.latency.server_latency(Instant::now())),
+                    },
+                })
+                .unwrap_or_else(|_| "{}".to_string());
+                let _ = msg.respond_to.send(response);
+                return false;
+            }
             api::schema::Method::ClientWindowTitleSet(params) => {
                 let response = self.handle_client_window_title_api(
                     msg.request.id.clone(),

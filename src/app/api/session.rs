@@ -14,6 +14,10 @@ impl App {
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
+        let _phase = crate::latency::enter_phase(
+            crate::latency::Phase::Snapshot,
+            crate::latency::UNKNOWN_PANE,
+        );
         let focused_workspace_id = self
             .state
             .active

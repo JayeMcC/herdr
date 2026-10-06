@@ -477,6 +477,8 @@ pub(crate) fn render_tab_surface_virtual(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) -> RenderedTabSurface {
+    let layout_phase =
+        crate::latency::enter_phase(crate::latency::Phase::Layout, crate::latency::UNKNOWN_PANE);
     let layout = crate::ui::compute_tab_surface_for(
         app_state,
         terminal_runtimes,
@@ -485,6 +487,7 @@ pub(crate) fn render_tab_surface_virtual(
         resize_panes,
         cell_size,
     );
+    drop(layout_phase);
     let surface = crate::ui::TabSurfaceView {
         target: layout.target,
         pane_infos: &layout.pane_infos,

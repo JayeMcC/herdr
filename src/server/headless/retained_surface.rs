@@ -497,6 +497,10 @@ impl HeadlessServer {
             } else {
                 protocol::MAX_FRAME_SIZE
             };
+            let _send_phase = crate::latency::enter_phase(
+                crate::latency::Phase::Send,
+                crate::latency::UNKNOWN_PANE,
+            );
             let serialized =
                 match Self::frame_server_message_with_max(prepared.message(), max_frame_size) {
                     Ok(serialized) => serialized,
@@ -526,6 +530,8 @@ impl HeadlessServer {
                         client.clear_deferred_render();
                     }
                     client.render_state.commit_sent_frame(prepared);
+                    self.latency
+                        .frame_sent(client_id, Instant::now(), crate::latency::log_if_slow);
                     sent += 1;
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {

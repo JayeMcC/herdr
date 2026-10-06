@@ -32,6 +32,7 @@ pub(super) fn command() -> Command {
         .subcommand(completion::command())
         .subcommand(update_command())
         .subcommand(status_command())
+        .subcommand(stats_command())
         .subcommand(config_command())
         .subcommand(channel_command())
         .subcommand(machine::command())
@@ -117,6 +118,16 @@ fn update_command() -> Command {
     Command::new("update")
         .about("Download and install the latest version")
         .arg(flag("handoff").help("Try live handoff after installing"))
+}
+
+fn stats_command() -> Command {
+    Command::new("stats")
+        .about("Show server performance statistics")
+        .subcommand(
+            Command::new("latency")
+                .about("Show input latency and render phase timing for the last 5 minutes")
+                .arg(json_flag()),
+        )
 }
 
 fn status_command() -> Command {

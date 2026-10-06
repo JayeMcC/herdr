@@ -96,6 +96,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id,
+            arrived: std::time::Instant::now(),
             pane_id,
             events: vec![crate::protocol::ClientPaneInputEvent::Paste(
                 "blocked".into()

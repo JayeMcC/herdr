@@ -252,6 +252,7 @@ fn validate_machine_command(args: &[String]) -> Result<(), String> {
         }
         "api" => subcommand == "snapshot",
         "status" => subcommand == "server",
+        "stats" => subcommand == "latency",
         "plugin" => matches!(
             subcommand,
             "link" | "unlink" | "enable" | "disable" | "list" | "action" | "log" | "logs" | "pane"

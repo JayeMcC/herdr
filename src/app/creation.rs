@@ -328,18 +328,22 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
+        let cwd_phase = crate::latency::enter_phase(crate::latency::Phase::Cwd, pane_id.raw());
+        let cwd = ws.tabs[tab_idx]
+            .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
+            .map(|cwd| cwd.display().to_string());
+        let foreground_cwd = ws.tabs[tab_idx]
+            .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
+            .map(|cwd| cwd.display().to_string());
+        drop(cwd_phase);
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
-            cwd: ws.tabs[tab_idx]
-                .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
-            foreground_cwd: ws.tabs[tab_idx]
-                .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
+            cwd,
+            foreground_cwd,
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,
