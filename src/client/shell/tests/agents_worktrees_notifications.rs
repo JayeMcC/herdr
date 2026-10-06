@@ -1471,3 +1471,80 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
 }
+
+fn paused_dot_agent(tokens: Vec<(String, String)>) -> ClientShellAgent {
+    ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("lane".into()),
+        parent_agent: None,
+        display_agent: None,
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Working,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens,
+        focused: true,
+    }
+}
+
+/// Foreground of the first status-dot glyph on the row of the agent panel hit
+/// for `pane_1`.
+fn paused_dot_sidebar_fg(state: &mut ClientShellState, frame: &FrameData) -> u32 {
+    let rect = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_1")
+        .expect("agent row hit")
+        .0;
+    let width = usize::from(frame.width);
+    let start = usize::from(rect.y) * width;
+    frame.cells[start..start + width]
+        .iter()
+        .find(|cell| cell.symbol == "●")
+        .expect("status dot on the agent row")
+        .fg
+}
+
+#[test]
+fn paused_dot_sidebar_draws_blue_while_token_is_set_and_state_colour_once_cleared() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut projected = snapshot();
+    projected.agents = vec![paused_dot_agent(vec![("paused".into(), "1".into())])];
+    state.set_snapshot(Box::new(projected.clone()));
+    state.set_pane_surface(surface());
+
+    let paused = state.compose(106, 30).expect("paused agent sidebar frame");
+    assert_eq!(
+        paused_dot_sidebar_fg(&mut state, &paused),
+        crate::protocol::color_to_u32(state.config.palette.blue)
+    );
+
+    projected.agents = vec![paused_dot_agent(Vec::new())];
+    state.set_snapshot(Box::new(projected));
+    let resumed = state.compose(106, 30).expect("resumed agent sidebar frame");
+    assert_eq!(
+        paused_dot_sidebar_fg(&mut state, &resumed),
+        crate::protocol::color_to_u32(state.config.palette.yellow)
+    );
+}
+
+#[test]
+fn paused_dot_sidebar_ignores_an_empty_paused_token() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut projected = snapshot();
+    projected.agents = vec![paused_dot_agent(vec![("paused".into(), String::new())])];
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    assert_eq!(
+        paused_dot_sidebar_fg(&mut state, &frame),
+        crate::protocol::color_to_u32(state.config.palette.yellow)
+    );
+}
