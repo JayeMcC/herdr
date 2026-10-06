@@ -191,6 +191,10 @@ pub(crate) struct ClientConnection {
     pub(crate) shell_deferred_navigation_response: Option<Vec<u8>>,
     /// Whether this shell uses the endpoint-owned keymap rather than a client-owned keymap.
     pub(crate) shell_uses_endpoint_keybindings: bool,
+    /// Highest client round-trip mark applied, and the highest already echoed on a frame.
+    /// Both stay zero for clients that never send marks, so they never receive an echo.
+    pub(crate) rtt_applied: u64,
+    pub(crate) rtt_echoed: u64,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     pub(crate) writer: Option<ClientWriter>,
 }
@@ -253,6 +257,8 @@ impl ClientConnection {
             shell_deferred_navigation_request_id: None,
             shell_deferred_navigation_response: None,
             shell_uses_endpoint_keybindings: false,
+            rtt_applied: 0,
+            rtt_echoed: 0,
             writer,
         }
     }
@@ -468,6 +474,47 @@ impl ClientConnection {
 
     pub(crate) fn is_active_shell_client(&self) -> bool {
         self.is_shell_client() && self.shell_surface_active
+    }
+
+    /// Records a round-trip mark. Marks arrive after the input they cover on the same
+    /// ordered connection, so that input has already been applied.
+    pub(crate) fn apply_rtt_mark(&mut self, seq: u64) {
+        self.rtt_applied = self.rtt_applied.max(seq);
+    }
+
+    /// The mark to echo ahead of the next frame, if one is outstanding.
+    pub(crate) fn pending_rtt_echo(&self) -> Option<u64> {
+        (self.rtt_applied > self.rtt_echoed).then_some(self.rtt_applied)
+    }
+
+    /// Prepends the outstanding echo to a framed render message. Both travel as one render
+    /// item, so the client reads the echo immediately before the frame that carries the input.
+    pub(crate) fn prefix_rtt_echo(&self, framed: Vec<u8>) -> (Vec<u8>, Option<u64>) {
+        let Some(seq) = self.pending_rtt_echo() else {
+            return (framed, None);
+        };
+        let mut combined = Vec::with_capacity(framed.len() + 64);
+        if crate::protocol::write_message(
+            &mut combined,
+            &crate::protocol::ServerMessage::EndpointControl {
+                kind: crate::protocol::endpoint::CLIENT_RTT_ECHO_KIND.into(),
+                data: seq.to_string(),
+            },
+        )
+        .is_err()
+        {
+            return (framed, None);
+        }
+        combined.extend_from_slice(&framed);
+        (combined, Some(seq))
+    }
+
+    /// Commits an echo once its frame was accepted. A frame that was not accepted leaves the
+    /// echo outstanding, so it is repeated ahead of the frame that does go out.
+    pub(crate) fn commit_rtt_echo(&mut self, seq: Option<u64>) {
+        if let Some(seq) = seq {
+            self.rtt_echoed = self.rtt_echoed.max(seq);
+        }
     }
 }
 

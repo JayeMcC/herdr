@@ -2437,6 +2437,13 @@ impl HeadlessServer {
                 client.host_mouse_capture_active = None;
                 true
             }
+            ServerEvent::ClientRttMark { client_id, seq } => {
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.apply_rtt_mark(seq);
+                }
+                // The echo rides the next frame; the mark alone never forces a render.
+                false
+            }
             ServerEvent::ClientShellPresentationSync { client_id, token } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;

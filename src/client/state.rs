@@ -43,6 +43,8 @@ pub(super) struct ClientState {
     pub(super) draw_host_cursor: bool,
     pub(super) detached_process_children: Vec<std::process::Child>,
     pub(super) shell: Option<shell::ClientShellState>,
+    /// Client-measured input round trip, active only on endpoints that advertise it.
+    pub(super) rtt: rtt::ClientRtt,
 }
 
 impl Drop for ClientState {
@@ -97,6 +99,7 @@ impl ClientState {
             shell: Some(shell::ClientShellState::new(
                 shell::ClientShellConfig::from_config(&crate::config::Config::default()),
             )),
+            rtt: rtt::ClientRtt::new(std::time::Instant::now()),
         }
     }
 
@@ -212,6 +215,7 @@ impl ClientState {
         stdout.write_all(&encoded.bytes)?;
         stdout.flush()?;
         crate::render_prof::duration_since("client_surface_patch.write", write_started);
+        self.rtt.frame_presented(std::time::Instant::now());
         let committed = self.blit_encoder.commit_patch(&rows, patch.cursor, encoded);
         crate::render_prof::event(if committed {
             "client_surface_patch.success"
@@ -268,6 +272,7 @@ impl ClientState {
         };
         let _ = write_encoded_frame_with_graphics(&mut stdout, &encoded.bytes, graphics);
         let _ = stdout.flush();
+        self.rtt.frame_presented(std::time::Instant::now());
         self.blit_encoder.commit(frame_data, encoded);
         self.repaint_pending = false;
     }

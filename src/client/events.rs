@@ -3,9 +3,14 @@ use super::*;
 /// Internal events for the client event loop.
 pub(super) enum ClientLoopEvent {
     #[cfg(unix)]
-    StdinInput(Vec<u8>),
+    /// Raw stdin bytes and the instant they were read.
+    StdinInput(Vec<u8>, std::time::Instant),
     #[cfg(unix)]
-    PixelMouse(Vec<u8>, crate::input::mouse::HostGeometry),
+    PixelMouse(
+        Vec<u8>,
+        crate::input::mouse::HostGeometry,
+        std::time::Instant,
+    ),
     #[cfg(unix)]
     DirectGraphicsResponse(direct_graphics::Response),
     #[cfg(windows)]

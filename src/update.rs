@@ -2416,11 +2416,11 @@ fn platform_target() -> (&'static str, &'static str) {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     };
-    use std::sync::Mutex;
     use std::thread;
 
     /// Forces [`super::update_prompts_are_interactive`] for the duration of a

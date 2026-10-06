@@ -510,6 +510,8 @@ pub(crate) enum ServerEvent {
     ClientShellMouseCapture { client_id: u64, enabled: bool },
     /// The committed shell asks the server to replay presentation effects before input resumes.
     ClientShellPresentationSync { client_id: u64, token: String },
+    /// A client-owned shell marked the input it sent before this point with a round-trip sequence.
+    ClientRttMark { client_id: u64, seq: u64 },
     /// A client-owned shell invoked one endpoint operation through this connection.
     ClientShellEndpointRequest {
         client_id: u64,
@@ -1336,6 +1338,15 @@ fn client_read_loop_with_endpoint_controls(
                     token: data,
                 }
             }
+            ClientMessage::EndpointControl { kind, data }
+                if kind == crate::protocol::endpoint::CLIENT_RTT_MARK_KIND =>
+            {
+                let Ok(seq) = data.parse::<u64>() else {
+                    debug!(client_id, "ignoring malformed client rtt mark");
+                    continue;
+                };
+                ServerEvent::ClientRttMark { client_id, seq }
+            }
             ClientMessage::EndpointControl { kind, data } => {
                 let Some(response) = crate::server::client_endpoint_control::response(&kind, data)
                 else {
@@ -2098,6 +2109,88 @@ mod tests {
             .join()
             .expect("read thread join")
             .expect("read thread result");
+    }
+
+    #[test]
+    fn client_rtt_mark_reaches_the_server_loop_and_malformed_marks_are_ignored() {
+        let (mut client_stream, server_stream, _path) = local_stream_pair("client-rtt-mark");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let read_quit = should_quit.clone();
+        let handle = std::thread::spawn(move || {
+            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+        });
+
+        for data in ["not-a-number", "12"] {
+            protocol::write_message(
+                &mut client_stream,
+                &ClientMessage::EndpointControl {
+                    kind: crate::protocol::endpoint::CLIENT_RTT_MARK_KIND.into(),
+                    data: data.into(),
+                },
+            )
+            .unwrap();
+        }
+        protocol::write_message(&mut client_stream, &ClientMessage::Detach).unwrap();
+
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "rtt mark"),
+            ServerEvent::ClientRttMark {
+                client_id: 7,
+                seq: 12
+            }
+        ));
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "detach after mark"),
+            ServerEvent::ClientDetach { client_id: 7 }
+        ));
+        handle
+            .join()
+            .expect("read thread join")
+            .expect("read thread result");
+    }
+
+    #[test]
+    fn client_rtt_old_shaped_hello_is_welcomed_with_the_capability_offered() {
+        let (mut client_stream, server_stream, _path) = local_stream_pair("client-rtt-old-hello");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let handshake_quit = should_quit.clone();
+        let handle = std::thread::spawn(move || {
+            handle_client_handshake(server_stream, 44, &server_event_tx, &handshake_quit)
+        });
+
+        // The frozen generation-1 hello: an old client that knows nothing about round trips.
+        protocol::write_message(
+            &mut client_stream,
+            &ClientMessage::EndpointControl {
+                kind: ENDPOINT_HELLO_KIND.into(),
+                data: include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/endpoint-hello-v1.json"
+                ))
+                .into(),
+            },
+        )
+        .unwrap();
+        let welcome = endpoint_welcome(
+            protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome"),
+        );
+        assert!(welcome.error.is_none());
+        assert!(welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == crate::protocol::endpoint::CLIENT_RTT_CAPABILITY));
+        assert!(matches!(
+            server_event_rx.blocking_recv(),
+            Some(ServerEvent::ClientShellConnected { client_id: 44, .. })
+        ));
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle
+            .join()
+            .expect("handshake thread join")
+            .expect("handshake thread result");
     }
 
     #[test]

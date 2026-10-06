@@ -125,10 +125,7 @@ mod tests {
 
     #[test]
     fn prepare_socket_path_removes_stale_socket() {
-        let dir = PathBuf::from(format!(
-            "/tmp/hs-{}",
-            crate::test_env::unique_token()
-        ));
+        let dir = PathBuf::from(format!("/tmp/hs-{}", crate::test_env::unique_token()));
         let _ = fs::create_dir_all(&dir);
         let socket_path = dir.join("stale.sock");
 
@@ -153,10 +150,7 @@ mod tests {
 
     #[test]
     fn prepare_socket_path_rejects_live_socket() {
-        let dir = PathBuf::from(format!(
-            "/tmp/hl-{}",
-            crate::test_env::unique_token()
-        ));
+        let dir = PathBuf::from(format!("/tmp/hl-{}", crate::test_env::unique_token()));
         let _ = fs::create_dir_all(&dir);
         let socket_path = dir.join("live.sock");
 
