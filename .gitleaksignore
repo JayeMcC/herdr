@@ -1,0 +1,8 @@
+# gitleaks false positives in vendored upstream libghostty-vt (checked 2026-10-07):
+# CI workflows reference $APPLE_NOTARIZATION_KEY (an env var, not a value); Zig field names contain 'key'.
+425c86179791cd32e2d4ce0ae7f269940b4b0663:vendor/libghostty-vt/src/terminal/snapshot/terminal.zig:generic-api-key:1035
+41dd733ca7123c9ac4bfc6c781697a660e95b052:vendor/libghostty-vt/.github/workflows/release-tag.yml:generic-api-key:259
+41dd733ca7123c9ac4bfc6c781697a660e95b052:vendor/libghostty-vt/.github/workflows/release-tip.yml:generic-api-key:408
+41dd733ca7123c9ac4bfc6c781697a660e95b052:vendor/libghostty-vt/.github/workflows/release-tip.yml:generic-api-key:653
+41dd733ca7123c9ac4bfc6c781697a660e95b052:vendor/libghostty-vt/.github/workflows/release-tip.yml:generic-api-key:850
+41dd733ca7123c9ac4bfc6c781697a660e95b052:vendor/libghostty-vt/src/input/Binding.zig:generic-api-key:4812
